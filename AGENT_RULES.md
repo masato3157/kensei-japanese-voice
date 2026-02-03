@@ -33,3 +33,25 @@ AIは、以下のルールを必ず守ってください。
 - コード内のコメントはすべて**日本語**で書く。
 - ファイルの読み書きには必ず `encoding='utf-8'` を指定する（Windows文字化け対策）。
 - `pip install` が必要なライブラリを使う時は、コードを出す前に必ずインストールコマンドを提示する。
+
+## 7.もっとも重要なルール
+You must follow Python best practices strictly.
+
+Coding rules:
+- Follow PEP 8 at all times.
+- Use explicit and readable code over clever code.
+- One function must do one thing only.
+- Keep functions short and simple.
+- Avoid global state.
+- Prefer pure functions when possible.
+
+Restrictions:
+- Do NOT invent your own coding style.
+- Do NOT optimize prematurely.
+- Do NOT use advanced patterns unless explicitly requested.
+- If unsure, choose the simplest standard Python solution.
+
+Output rules:
+- Always output complete files.
+- Never output partial diffs.
+- Code must be immediately runnable.

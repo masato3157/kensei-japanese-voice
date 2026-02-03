@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-コレクター - llama.cppによるAIテキスト整形
+コレクター - Groq APIによる超高速AIテキスト整形
 
-このモジュールは、ローカルLLM（llama.cpp）を使用して
+このモジュールは、Groqクラウドを使用して
 音声認識結果を読みやすく整形する機能を提供します。
+Groqは超低レイテンシ（数百ミリ秒）で応答します。
 """
 
 from typing import Optional
-from llama_cpp import Llama
+from groq import Groq
 
-from src.utils import config
+from src.utils.config_loader import (
+    get_settings,
+    get_system_prompt,
+    is_api_key_configured,
+)
 
 
 class TextCorrector:
     """
-    AIテキスト整形クラス
+    AIテキスト整形クラス（Groq版）
     
-    llama.cppを使用して、音声認識されたテキストを
+    Groq APIを使用して、音声認識されたテキストを
     文法的に正しく、読みやすい形式に整形します。
     
     使用例:
@@ -25,46 +30,39 @@ class TextCorrector:
         print(corrected)  # "これは賢声のテストです。"
     """
     
-    def __init__(
-        self,
-        model_path: str = config.MODEL_PATH,
-        n_ctx: int = config.LLM_CONTEXT_SIZE,
-        verbose: bool = False
-    ):
+    def __init__(self, api_key: Optional[str] = None):
         """
         コレクターを初期化する
         
         Args:
-            model_path: GGUFモデルファイルのパス
-            n_ctx: コンテキストサイズ（トークン数）
-            verbose: 詳細ログを出力するか
+            api_key: Groq APIキー（省略時はsettings.pyから読み込み）
         """
-        self._model_path = model_path
-        self._n_ctx = n_ctx
-        self._verbose = verbose
-        self._llm: Optional[Llama] = None
+        # 設定を読み込み
+        self._settings = get_settings()
+        self._api_key = api_key or self._settings.get("GROQ_API_KEY")
+        self._client: Optional[Groq] = None
         
-        # モデルを読み込む
-        self._load_model()
+        # システムプロンプトを取得
+        self._system_prompt = get_system_prompt()
         
-    def _load_model(self) -> None:
-        """LLMモデルを読み込む"""
-        if not config.model_exists():
-            raise FileNotFoundError(
-                f"モデルファイルが見つかりません: {self._model_path}\n"
-                f"models/ フォルダにGGUFファイルを配置してください。"
+        # クライアントを初期化
+        self._init_client()
+        
+    def _init_client(self) -> None:
+        """Groqクライアントを初期化する"""
+        if not is_api_key_configured(self._settings):
+            raise ValueError(
+                "Groq APIキーが設定されていません。\n"
+                "settings.py の GROQ_API_KEY を設定してください。\n"
+                "APIキーは https://console.groq.com で取得できます。"
             )
             
-        print(f"[Corrector] モデル読み込み中: {self._model_path}...")
+        model_name = self._settings.get("MODEL_NAME", "llama-3.3-70b-versatile")
+        print(f"[Corrector] Groq API クライアント初期化中...")
         
-        self._llm = Llama(
-            model_path=self._model_path,
-            n_ctx=self._n_ctx,
-            verbose=self._verbose,
-            n_threads=4,  # CPUスレッド数
-        )
+        self._client = Groq(api_key=self._api_key)
         
-        print(f"[Corrector] モデル読み込み完了")
+        print(f"[Corrector] Groq API 準備完了 (モデル: {model_name})")
         
     def correct(self, text: str) -> str:
         """
@@ -76,31 +74,34 @@ class TextCorrector:
         Returns:
             整形されたテキスト
         """
-        if self._llm is None:
-            raise RuntimeError("モデルが読み込まれていません")
+        if self._client is None:
+            raise RuntimeError("Groqクライアントが初期化されていません")
             
         if not text or not text.strip():
             return ""
-            
-        # Chat形式のプロンプトを構築
+        
+        # メッセージを構築
         messages = [
-            {"role": "system", "content": config.SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": text.strip()}
         ]
         
+        # 設定値を取得
+        model_name = self._settings.get("MODEL_NAME", "llama-3.3-70b-versatile")
+        temperature = self._settings.get("LLM_TEMPERATURE", 0.0)
+        max_tokens = self._settings.get("LLM_MAX_TOKENS", 1024)
+        
         try:
-            # LLMで生成
-            response = self._llm.create_chat_completion(
+            # Groq APIで生成
+            response = self._client.chat.completions.create(
+                model=model_name,
                 messages=messages,
-                max_tokens=None,  # 無制限（入力に応じて自動調整）
-                temperature=config.LLM_TEMPERATURE,
-                top_p=config.LLM_TOP_P,
-                repeat_penalty=config.LLM_REPEAT_PENALTY,
-                stop=["<|eot_id|>", "<|end_of_text|>"],  # Llama3の終了トークン
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
             
             # レスポンスからテキストを抽出
-            result = response["choices"][0]["message"]["content"]
+            result = response.choices[0].message.content
             
             # 余分な空白や改行を整理
             result = result.strip()
@@ -120,47 +121,42 @@ class TextCorrector:
             モデル情報の辞書
         """
         return {
-            "model_path": self._model_path,
-            "n_ctx": self._n_ctx,
-            "loaded": self._llm is not None
+            "model_name": self._settings.get("MODEL_NAME"),
+            "provider": "Groq",
+            "initialized": self._client is not None
         }
     
     def dispose(self) -> None:
         """リソースを解放する"""
-        if self._llm is not None:
-            del self._llm
-            self._llm = None
-            print("[Corrector] リソース解放完了")
+        self._client = None
+        print("[Corrector] リソース解放完了")
 
 
 # モジュールを直接実行した場合のテスト用
 if __name__ == "__main__":
     import time
     
-    print("=== TextCorrector テスト ===")
+    print("=== TextCorrector (Groq版) テスト ===")
     print()
     
-    # モデル存在チェック
-    if not config.model_exists():
-        print(f"エラー: モデルファイルが見つかりません")
-        print(f"パス: {config.MODEL_PATH}")
-        print()
-        print("以下からダウンロードしてください:")
-        print("https://huggingface.co/elyza/Llama-3-ELYZA-JP-8B-GGUF")
+    # APIキーチェック
+    if not is_api_key_configured():
+        print(f"エラー: Groq APIキーが設定されていません")
+        print(f"settings.py の GROQ_API_KEY を設定してください")
         exit(1)
     
-    # モデル読み込み
+    # クライアント初期化
     start_time = time.time()
     corrector = TextCorrector()
-    load_time = time.time() - start_time
-    print(f"モデル読み込み時間: {load_time:.2f} 秒")
+    init_time = time.time() - start_time
+    print(f"初期化時間: {init_time:.2f} 秒")
     print()
     
     # テストケース
     test_cases = [
         "えーとこれは検性のテストですあのちゃんと動くかな",
-        "今日はいい天気ですねえー散歩に行きたいです",
-        "あのーこのプロジェクトはえーとPythonで書かれています",
+        "今日はいい天気だねー散歩行きたい",
+        "まあ、今の段階としてはいいかな",
     ]
     
     for i, test_text in enumerate(test_cases, 1):

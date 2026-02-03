@@ -8,7 +8,7 @@
 
 処理フロー:
 1. 左Ctrlキー押下 → 録音開始
-2. 左Ctrlキー離上 → 録音停止 → Whisperで文字起こし → LlamaでAI整形 → 貼り付け
+2. 左Ctrlキー離上 → 録音停止 → Whisperで文字起こし → GroqでAI整形 → 貼り付け
 """
 
 import tkinter as tk
@@ -23,7 +23,7 @@ from src.audio.transcriber import AudioTranscriber
 from src.ai.corrector import TextCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
-from src.utils import config
+from src.utils.config_loader import get_settings, is_api_key_configured
 
 
 class MainWindow:
@@ -33,7 +33,7 @@ class MainWindow:
     責務:
     - アプリケーションのメインUIを表示
     - 左Ctrlキーでプッシュ・トゥ・トーク録音
-    - Whisperで音声認識 → LlamaでAI整形
+    - Whisperで音声認識 → GroqでAI整形
     - 認識結果をクリップボード経由で貼り付け
     """
     
@@ -49,6 +49,9 @@ class MainWindow:
             root: TkinterのルートウィンドウまたはToplevel
         """
         self.root = root
+        
+        # === 設定の読み込み ===
+        self._settings = get_settings()
         
         # === UIの先行構築（ログ出力を可能にする） ===
         self._setup_window()
@@ -78,21 +81,26 @@ class MainWindow:
         self.root.update()  # UIを更新
         self._transcriber = AudioTranscriber()
         
-        # AI整形コンポーネント（LLMモデル読み込み）
-        self.add_log("[初期化] AI整形モデル (Llama)...")
-        self.set_status("LLMモデル読み込み中...", "orange")
+        # AI整形コンポーネント（Groq API）
+        self.add_log("[初期化] AI整形 (Groq API)...")
+        self.set_status("Groq API 初期化中...", "orange")
         self.root.update()  # UIを更新
         
-        # モデルの存在確認
-        if config.model_exists():
-            self._corrector = TextCorrector()
-            self._ai_enabled = True
-            self.add_log("[初期化] AI整形: 有効")
+        # APIキーの存在確認（クラウド版のため常に有効）
+        if is_api_key_configured(self._settings):
+            try:
+                self._corrector = TextCorrector()
+                self._ai_enabled = True
+                self.add_log("[初期化] AI整形: 有効 (Groq)")
+            except Exception as e:
+                self._corrector = None
+                self._ai_enabled = False
+                self.add_log(f"[初期化] AI整形: 無効 ({str(e)})")
         else:
             self._corrector = None
             self._ai_enabled = False
-            self.add_log("[初期化] AI整形: 無効 (モデルなし)")
-            self.add_log(f"[ヒント] models/ に GGUF ファイルを配置してください")
+            self.add_log("[初期化] AI整形: 無効 (APIキー未設定)")
+            self.add_log("[ヒント] settings.py の GROQ_API_KEY を設定してください")
         
         # キーボードハンドラー
         self._keyboard_handler = KeyboardHandler()
@@ -158,7 +166,7 @@ class MainWindow:
         
         処理フロー:
         1. Whisperで文字起こし
-        2. Llamaで文章整形（AI有効時のみ）
+        2. Groqで文章整形（AI有効時のみ）
         3. クリップボード経由で貼り付け
         
         Args:
@@ -177,7 +185,7 @@ class MainWindow:
                 
             self.root.after(0, lambda: self.add_log(f"[認識] {raw_text.strip()}"))
             
-            # === ステップ2: AI整形 (Llama) ===
+            # === ステップ2: AI整形 (Groq) ===
             if self._ai_enabled and self._corrector is not None:
                 self.root.after(0, lambda: self.set_status("🧠 AI思考中...", "purple"))
                 
@@ -253,7 +261,7 @@ class MainWindow:
         # バージョン表示
         version_label = ttk.Label(
             header_frame,
-            text="v0.2",
+            text="v0.3",
             font=("Yu Gothic UI", 9),
             foreground="gray"
         )
