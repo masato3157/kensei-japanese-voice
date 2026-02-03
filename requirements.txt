@@ -1,0 +1,7 @@
+faster-whisper
+llama-cpp-python
+pyaudio
+keyboard
+pyperclip
+pywin32
+numpy
