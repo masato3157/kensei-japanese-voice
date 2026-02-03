@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-メインウィンドウ - 賢声のメインUI（統合版）
+メインウィンドウ - 賢声のメインUI（最終完成版）
 
 このモジュールは、賢声アプリケーションのメインウィンドウを提供します。
-すべてのコンポーネント（録音、認識、キーボード、クリップボード）を統合し、
-プッシュ・トゥ・トーク方式の音声入力を実現します。
+すべてのコンポーネント（録音、認識、AI整形、キーボード、クリップボード）を統合し、
+プッシュ・トゥ・トーク方式の高精度音声入力を実現します。
+
+処理フロー:
+1. 左Ctrlキー押下 → 録音開始
+2. 左Ctrlキー離上 → 録音停止 → Whisperで文字起こし → LlamaでAI整形 → 貼り付け
 """
 
 import tkinter as tk
@@ -16,24 +20,26 @@ from typing import Optional
 # 内部モジュール
 from src.audio.recorder import AudioRecorder
 from src.audio.transcriber import AudioTranscriber
+from src.ai.corrector import TextCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
+from src.utils import config
 
 
 class MainWindow:
     """
-    賢声のメインウィンドウクラス（統合版）
+    賢声のメインウィンドウクラス（最終完成版）
     
     責務:
     - アプリケーションのメインUIを表示
     - 左Ctrlキーでプッシュ・トゥ・トーク録音
+    - Whisperで音声認識 → LlamaでAI整形
     - 認識結果をクリップボード経由で貼り付け
-    - ログ表示
     """
     
     # ウィンドウサイズの定数
-    WINDOW_WIDTH = 400
-    WINDOW_HEIGHT = 320
+    WINDOW_WIDTH = 420
+    WINDOW_HEIGHT = 350
     
     def __init__(self, root: tk.Tk):
         """
@@ -44,32 +50,49 @@ class MainWindow:
         """
         self.root = root
         
-        # === コンポーネントの初期化 ===
-        self._init_components()
-        
-        # === UIの構築 ===
+        # === UIの先行構築（ログ出力を可能にする） ===
         self._setup_window()
         self._create_widgets()
+        
+        # === コンポーネントの初期化 ===
+        self._init_components()
         
         # === キーボード監視の開始 ===
         self._setup_keyboard_handler()
         
         # 準備完了メッセージ
-        self.add_log("[システム] 賢声を起動しました")
+        self.add_log("[システム] すべての準備が整いました")
         self.add_log("[ヒント] 左Ctrlキーを押している間、録音します")
         self.set_status("待機中... (左Ctrlキーで録音)", "green")
         
     def _init_components(self) -> None:
-        """音声処理コンポーネントを初期化する"""
-        self.add_log = lambda msg: None  # 一時的なダミー（後で上書き）
+        """音声処理・AIコンポーネントを初期化する"""
         
         # 録音コンポーネント
+        self.add_log("[初期化] 録音モジュール...")
         self._recorder = AudioRecorder()
         
         # 認識コンポーネント（初回はモデル読み込みに時間がかかる）
-        print("[MainWindow] Whisperモデルを読み込み中...")
+        self.add_log("[初期化] 音声認識モデル (Whisper)...")
+        self.set_status("Whisperモデル読み込み中...", "orange")
+        self.root.update()  # UIを更新
         self._transcriber = AudioTranscriber()
-        print("[MainWindow] 準備完了")
+        
+        # AI整形コンポーネント（LLMモデル読み込み）
+        self.add_log("[初期化] AI整形モデル (Llama)...")
+        self.set_status("LLMモデル読み込み中...", "orange")
+        self.root.update()  # UIを更新
+        
+        # モデルの存在確認
+        if config.model_exists():
+            self._corrector = TextCorrector()
+            self._ai_enabled = True
+            self.add_log("[初期化] AI整形: 有効")
+        else:
+            self._corrector = None
+            self._ai_enabled = False
+            self.add_log("[初期化] AI整形: 無効 (モデルなし)")
+            self.add_log(f"[ヒント] models/ に GGUF ファイルを配置してください")
         
         # キーボードハンドラー
         self._keyboard_handler = KeyboardHandler()
@@ -119,37 +142,60 @@ class MainWindow:
             
         # UI更新
         duration = len(audio_data) / 16000
-        self.root.after(0, lambda: self.set_status("変換中...", "orange"))
+        self.root.after(0, lambda: self.set_status("🎤 変換中...", "orange"))
         self.root.after(0, lambda: self.add_log(f"[録音] 終了 ({duration:.1f}秒)"))
         
-        # 別スレッドで文字起こしを実行（UIがフリーズしないように）
+        # 別スレッドで処理を実行（UIがフリーズしないように）
         threading.Thread(
-            target=self._process_transcription,
+            target=self._process_audio,
             args=(audio_data,),
             daemon=True
         ).start()
         
-    def _process_transcription(self, audio_data) -> None:
+    def _process_audio(self, audio_data) -> None:
         """
-        文字起こしを実行する（別スレッドで実行）
+        音声処理パイプラインを実行する（別スレッドで実行）
+        
+        処理フロー:
+        1. Whisperで文字起こし
+        2. Llamaで文章整形（AI有効時のみ）
+        3. クリップボード経由で貼り付け
         
         Args:
             audio_data: 音声データ（float32 numpy配列）
         """
         try:
-            # 文字起こし実行
-            text = self._transcriber.transcribe(audio_data)
+            # === ステップ1: 音声認識 (Whisper) ===
+            self.root.after(0, lambda: self.set_status("🎤 変換中...", "orange"))
             
-            if text and text.strip():
-                # テキストを貼り付け
-                paste_text(text.strip())
-                
-                # UI更新（メインスレッドで実行）
-                self.root.after(0, lambda: self.add_log(f"[認識] {text.strip()}"))
-                self.root.after(0, lambda: self.set_status("✔ 貼り付け完了", "blue"))
-            else:
+            raw_text = self._transcriber.transcribe(audio_data)
+            
+            if not raw_text or not raw_text.strip():
                 self.root.after(0, lambda: self.add_log("[認識] テキストなし"))
                 self.root.after(0, lambda: self.set_status("待機中...", "green"))
+                return
+                
+            self.root.after(0, lambda: self.add_log(f"[認識] {raw_text.strip()}"))
+            
+            # === ステップ2: AI整形 (Llama) ===
+            if self._ai_enabled and self._corrector is not None:
+                self.root.after(0, lambda: self.set_status("🧠 AI思考中...", "purple"))
+                
+                corrected_text = self._corrector.correct(raw_text.strip())
+                
+                if corrected_text and corrected_text.strip():
+                    final_text = corrected_text.strip()
+                    self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
+                else:
+                    final_text = raw_text.strip()
+            else:
+                # AI無効時は認識結果をそのまま使用
+                final_text = raw_text.strip()
+            
+            # === ステップ3: 貼り付け ===
+            paste_text(final_text)
+            
+            self.root.after(0, lambda: self.set_status("✔ 貼り付け完了", "blue"))
                 
         except Exception as e:
             self.root.after(0, lambda: self.add_log(f"[エラー] {str(e)}"))
@@ -158,7 +204,7 @@ class MainWindow:
         finally:
             self._is_processing = False
             # 少し待ってから待機状態に戻す
-            self.root.after(1500, lambda: self.set_status("待機中... (左Ctrlキーで録音)", "green"))
+            self.root.after(2000, lambda: self.set_status("待機中... (左Ctrlキーで録音)", "green"))
         
     def _setup_window(self) -> None:
         """ウィンドウの基本設定を行う"""
@@ -166,16 +212,13 @@ class MainWindow:
         
         # ウィンドウサイズと位置を設定
         self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
-        self.root.minsize(300, 200)
+        self.root.minsize(350, 250)
         
         # ウィンドウを画面中央に配置
         self._center_window()
         
         # 閉じるボタンの動作を設定
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
-        
-        # 常に最前面に表示（任意）
-        # self.root.attributes("-topmost", True)
         
     def _center_window(self) -> None:
         """ウィンドウを画面中央に配置する"""
@@ -207,6 +250,15 @@ class MainWindow:
         )
         title_label.pack(side=tk.LEFT)
         
+        # バージョン表示
+        version_label = ttk.Label(
+            header_frame,
+            text="v0.2",
+            font=("Yu Gothic UI", 9),
+            foreground="gray"
+        )
+        version_label.pack(side=tk.LEFT, padx=(5, 0), pady=(8, 0))
+        
         # 設定ボタン
         self.settings_button = ttk.Button(
             header_frame,
@@ -228,14 +280,14 @@ class MainWindow:
         self.status_label.pack(side=tk.LEFT)
         
         # === ログ表示エリア ===
-        log_label = ttk.Label(main_frame, text="認識ログ:")
+        log_label = ttk.Label(main_frame, text="処理ログ:")
         log_label.pack(anchor=tk.W)
         
         self.log_area = scrolledtext.ScrolledText(
             main_frame,
-            height=10,
+            height=12,
             wrap=tk.WORD,
-            font=("Yu Gothic UI", 10),
+            font=("Yu Gothic UI", 9),
             state=tk.DISABLED  # 読み取り専用
         )
         self.log_area.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
@@ -256,6 +308,10 @@ class MainWindow:
         
         # 認識コンポーネントを解放
         self._transcriber.dispose()
+        
+        # AI整形コンポーネントを解放
+        if self._corrector is not None:
+            self._corrector.dispose()
         
         # ウィンドウを閉じる
         self.root.destroy()
