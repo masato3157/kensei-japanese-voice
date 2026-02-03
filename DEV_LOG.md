@@ -1,0 +1,90 @@
+# 賢声 (Kensei) 開発ログ
+
+このファイルは、賢声プロジェクトの開発経緯を記録するためのログファイルです。
+
+---
+
+## 2026-02-03
+
+### v0.1 - 基本プロトタイプ
+**コミット**: `651fc5d`
+
+#### 実装内容
+- **プロジェクト初期化**: ディレクトリ構造の作成、`requirements.txt` の作成
+- **音声録音機能** (`src/audio/recorder.py`): PyAudioを使用した16kHz/mono/16bit録音
+- **音声認識機能** (`src/audio/transcriber.py`): faster-whisperによる音声認識（baseモデル、CPU/int8）
+- **キーボードハンドラー** (`src/utils/keyboard_handler.py`): 左Ctrlキーのグローバル監視
+- **クリップボード操作** (`src/utils/clipboard.py`): テキストのコピー＆ペースト
+- **メインウィンドウ** (`src/ui/main_window.py`): Tkinterベースの基本UI
+- **プッシュ・トゥ・トーク**: 左Ctrlキーで録音→認識→貼り付けの一連処理
+
+---
+
+### v0.2 - AI整形機能の統合（ローカルLLM版）
+**コミット**: `1f6a6bc`
+
+#### 実装内容
+- **設定管理** (`src/utils/config.py`): モデルパス、システムプロンプトの一元管理
+- **AI整形機能** (`src/ai/corrector.py`): llama.cppによるテキスト校正
+  - 使用モデル: `Llama-3-ELYZA-JP-8B-q4_k_m.gguf`
+  - 処理時間: 約10秒/リクエスト
+- **システムプロンプトの調整**: 会話禁止、ニュアンス保持、フィラー削除のバランス調整
+- **処理パイプライン**: Whisper認識 → Llama整形 → 貼り付け
+
+#### 課題
+- ローカルLLMの処理速度が遅い（約10秒）
+- プロンプト調整が難しい（回答モードに入りやすい）
+
+---
+
+### v0.3 - Groqクラウド版への移行 + リファクタリング
+**コミット**: `2b1a606`, `dfdfb1c`
+
+#### 実装内容
+- **Groq API対応**: ローカルLLMからクラウド版へ移行
+  - 使用モデル: `llama-3.3-70b-versatile`
+  - 処理時間: 約0.5〜1秒/リクエスト（大幅な高速化）
+- **設定リファクタリング**:
+  - `settings.py`: ユーザー編集用の設定ファイル（公開用）
+  - `local_settings.py`: 機密情報（APIキー）用ファイル（Git管理外）
+  - `src/utils/config_loader.py`: 設定読み込みロジックの分離
+- **辞書機能** (`src/data/dictionary.json`): カスタム用語の定義
+  - プロンプト辞書注入方式で固有名詞の誤変換を修正
+- **セキュリティ強化**: APIキーの分離管理、`.gitignore`の整備
+- **起動スクリプト** (`start_kensei.bat`): ダブルクリックで起動可能
+
+#### ファイル構成（v0.3時点）
+```
+kensei-japanese-voice/
+├── main.py                    # エントリーポイント
+├── settings.py                # ユーザー設定（公開用）
+├── local_settings.py          # 秘密鍵設定（Git管理外）
+├── start_kensei.bat           # 起動スクリプト
+├── requirements.txt           # 依存関係
+├── .gitignore                 # Git除外設定
+├── src/
+│   ├── audio/
+│   │   ├── recorder.py        # 音声録音
+│   │   └── transcriber.py     # 音声認識（Whisper）
+│   ├── ai/
+│   │   └── corrector.py       # AI整形（Groq）
+│   ├── ui/
+│   │   └── main_window.py     # メインウィンドウ
+│   ├── utils/
+│   │   ├── config.py          # 旧設定（互換性維持）
+│   │   ├── config_loader.py   # 設定読み込みロジック
+│   │   ├── keyboard_handler.py # キーボード監視
+│   │   └── clipboard.py       # クリップボード操作
+│   └── data/
+│       └── dictionary.json    # 用語辞書
+└── models/                    # AIモデル格納（Git管理外）
+```
+
+---
+
+## 今後の予定
+
+- [ ] 設定画面の実装
+- [ ] ゴーストテキスト表示機能
+- [ ] エラーハンドリングの強化
+- [ ] パッケージング（exe化）
