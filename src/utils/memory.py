@@ -171,10 +171,15 @@ class ContextManager:
         # 直近 limit 件だけ取得
         recent_history = self.history[-limit:]
         
-        prompt = "\n【直近の文脈】\n以下は直近のやり取りです。文脈を考慮して校正してください：\n"
-        for i, entry in enumerate(recent_history):
-            prompt += f"---\n入力{i+1}: {entry['user']}\n"
-            prompt += f"出力{i+1}: {entry['ai']}\n"
+        prompt = """
+[Previous Conversation Context]
+The following is the recent conversation history. Use this to understand the topic and context for correcting the new input.
+Consider the domain and subject matter when choosing between homophones (同音異義語).
+
+"""
+        for entry in recent_history:
+            prompt += f"- {entry['ai']}\n"
+        
         return prompt
         
     def clear(self) -> None:

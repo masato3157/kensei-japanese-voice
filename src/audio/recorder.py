@@ -45,6 +45,20 @@ class AudioRecorder:
         if self._audio is None:
             self._audio = pyaudio.PyAudio()
             
+    def get_default_input_device_name(self) -> str:
+        """
+        デフォルト入力デバイス（マイク）の名前を取得する
+        
+        Returns:
+            デバイス名（取得失敗時は「不明」）
+        """
+        try:
+            self._init_audio()
+            default_index = self._audio.get_default_input_device_info()
+            return default_index.get("name", "不明")
+        except Exception as e:
+            return f"取得失敗: {e}"
+            
     def _cleanup_audio(self) -> None:
         """PyAudioリソースを解放する"""
         if self._audio is not None:

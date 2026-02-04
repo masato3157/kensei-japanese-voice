@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-メインウィンドウ - 賢声のメインUI（v0.4 手動修正対応版）
+メインウィンドウ - 賢声のメインUI（v0.4.7 シンプル版）
 
 このモジュールは、賢声アプリケーションのメインウィンドウを提供します。
-すべてのコンポーネント（録音、認識、AI整形、キーボード、クリップボード）を統合し、
-プッシュ・トゥ・トーク方式の高精度音声入力を実現します。
+すべてのコンポーネント（録音、認識、AI整形）を統合し、
+コンテキスト主導の高精度音声入力を実現します。
 
-v0.4の機能:
-- クリップボードの内容と比較して「修正」か「新規入力」かを自動判定
-- 修正の場合は学習を実行
-- 性格パラメータをGUI上にリアルタイム表示
-- 右Ctrlキーでトグル録音（固定モード）
-- 手動修正（キーボードで修正→コピー→右Ctrl）にも対応
+v0.4.7の機能:
+- 左Ctrl: プッシュ・トゥ・トーク録音
+- 右Ctrl: 録音トグル
+- ContextManagerによる文脈参照で同音異義語を判定
+- 学習機能は廃止（シンプル構成）
 """
 
 import tkinter as tk
@@ -20,7 +19,6 @@ import threading
 from datetime import datetime
 from typing import Optional
 import time
-import pyperclip
 import keyboard
 
 # 内部モジュール
@@ -29,20 +27,18 @@ from src.audio.transcriber import AudioTranscriber
 from src.ai.corrector import TextCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
-from src.utils.similarity import TextSimilarity
 
 
 class MainWindow:
     """
-    賢声のメインウィンドウクラス（v0.4 手動修正対応版）
+    賢声のメインウィンドウクラス（v0.4.7 シンプル版）
     
     責務:
     - アプリケーションのメインUIを表示
     - 左Ctrlキーでプッシュ・トゥ・トーク録音
-    - 右Ctrlキー: 手動修正学習 または トグル録音
+    - 右Ctrlキーで録音トグル
     - Whisperで音声認識 → GroqでAI整形
-    - クリップボードと比較して修正/新規入力を自動判定
-    - 性格パラメータをリアルタイム表示
+    - ContextManagerによる文脈参照
     """
     
     # ウィンドウサイズの定数
@@ -86,6 +82,10 @@ class MainWindow:
         # 録音コンポーネント
         self.add_log("[初期化] 録音モジュール...")
         self._recorder = AudioRecorder()
+        
+        # マイク情報を表示
+        mic_name = self._recorder.get_default_input_device_name()
+        self.add_log(f"[マイク] {mic_name}")
         
         # 認識コンポーネント（初回はモデル読み込みに時間がかかる）
         self.add_log("[初期化] 音声認識モデル (Whisper)...")
@@ -133,14 +133,13 @@ class MainWindow:
         # キーリピート対策: 押下フラグを使用
         self._right_ctrl_pressed = False
         
-        # 右Ctrlのscan_code = 285 でフックを設定
-        # 'right ctrl' や 'ctrl_r' では左右の区別が不確実なため、hookで判定
-        keyboard.hook(self._handle_right_ctrl_event)
-        print("[MainWindow] 右Ctrlキー: ホットキー設定完了")
+        # 右Ctrlのscan_code = 285
+        keyboard.hook(self._handle_hotkey_event)
+        print("[MainWindow] 右Ctrl: 録音トグル")
         
-    def _handle_right_ctrl_event(self, event: keyboard.KeyboardEvent) -> None:
-        """右Ctrlキーイベントを処理する"""
-        # 右Ctrl (scan_code=285) のみを処理
+    def _handle_hotkey_event(self, event: keyboard.KeyboardEvent) -> None:
+        """ホットキーイベントを処理する"""
+        # 右Ctrl (scan_code=285) のみ処理
         if event.scan_code != 285:
             return
             
@@ -150,7 +149,7 @@ class MainWindow:
             self._on_right_ctrl_release()
         
     def _on_right_ctrl_press(self) -> None:
-        """右Ctrlキー押下時（キーリピート対策付き）"""
+        """右Ctrlキー押下時（録音トグルのみ）"""
         # 既に押下済みなら無視（キーリピート対策）
         if self._right_ctrl_pressed:
             return
@@ -159,40 +158,11 @@ class MainWindow:
         if self._is_processing:
             return
             
-        # シンプルに録音トグルのみ
         self._toggle_recording()
         
     def _on_right_ctrl_release(self) -> None:
         """右Ctrlキー離上時"""
         self._right_ctrl_pressed = False
-        
-    def _learn_manual_correction(self, original_text: str, corrected_text: str) -> None:
-        """
-        手動修正を学習する（別スレッドで実行）
-        
-        Args:
-            original_text: 元のテキスト（音声認識結果）
-            corrected_text: 修正後のテキスト（クリップボード）
-        """
-        try:
-            report = self._corrector.learn_from_correction(original_text, corrected_text)
-            
-            self.root.after(0, lambda: self.add_log(f"[手動修正] {report}"))
-            self.root.after(0, lambda: self.set_status("✔ 学習完了", "blue"))
-            
-            # 性格パラメータを更新
-            self.root.after(0, self.update_stats_display)
-            
-            # 連続学習を防ぐためクリア
-            self._last_voice_text = None
-            
-        except Exception as e:
-            self.root.after(0, lambda: self.add_log(f"[手動修正] エラー: {e}"))
-            self.root.after(0, lambda: self.set_status("エラー発生", "red"))
-            
-        finally:
-            self._is_processing = False
-            self.root.after(2000, lambda: self.set_status("待機中...", "green"))
         
     def _toggle_recording(self) -> None:
         """右Ctrlキーでの録音トグル処理"""
