@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-メインウィンドウ - 賢声のメインUI（最終完成版）
+メインウィンドウ - 賢声のメインUI（v0.4 手動修正対応版）
 
 このモジュールは、賢声アプリケーションのメインウィンドウを提供します。
 すべてのコンポーネント（録音、認識、AI整形、キーボード、クリップボード）を統合し、
 プッシュ・トゥ・トーク方式の高精度音声入力を実現します。
 
-処理フロー:
-1. 左Ctrlキー押下 → 録音開始
-2. 左Ctrlキー離上 → 録音停止 → Whisperで文字起こし → GroqでAI整形 → 貼り付け
+v0.4の機能:
+- クリップボードの内容と比較して「修正」か「新規入力」かを自動判定
+- 修正の場合は学習を実行
+- 性格パラメータをGUI上にリアルタイム表示
+- 右Ctrlキーでトグル録音（固定モード）
+- 手動修正（キーボードで修正→コピー→右Ctrl）にも対応
 """
 
 import tkinter as tk
@@ -16,6 +19,9 @@ from tkinter import ttk, scrolledtext
 import threading
 from datetime import datetime
 from typing import Optional
+import time
+import pyperclip
+import keyboard
 
 # 内部モジュール
 from src.audio.recorder import AudioRecorder
@@ -23,23 +29,25 @@ from src.audio.transcriber import AudioTranscriber
 from src.ai.corrector import TextCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
-from src.utils.config_loader import get_settings, is_api_key_configured
+from src.utils.similarity import TextSimilarity
 
 
 class MainWindow:
     """
-    賢声のメインウィンドウクラス（最終完成版）
+    賢声のメインウィンドウクラス（v0.4 手動修正対応版）
     
     責務:
     - アプリケーションのメインUIを表示
     - 左Ctrlキーでプッシュ・トゥ・トーク録音
+    - 右Ctrlキー: 手動修正学習 または トグル録音
     - Whisperで音声認識 → GroqでAI整形
-    - 認識結果をクリップボード経由で貼り付け
+    - クリップボードと比較して修正/新規入力を自動判定
+    - 性格パラメータをリアルタイム表示
     """
     
     # ウィンドウサイズの定数
-    WINDOW_WIDTH = 420
-    WINDOW_HEIGHT = 350
+    WINDOW_WIDTH = 450
+    WINDOW_HEIGHT = 420
     
     def __init__(self, root: tk.Tk):
         """
@@ -49,9 +57,6 @@ class MainWindow:
             root: TkinterのルートウィンドウまたはToplevel
         """
         self.root = root
-        
-        # === 設定の読み込み ===
-        self._settings = get_settings()
         
         # === UIの先行構築（ログ出力を可能にする） ===
         self._setup_window()
@@ -63,10 +68,17 @@ class MainWindow:
         # === キーボード監視の開始 ===
         self._setup_keyboard_handler()
         
+        # === 右Ctrlキーのホットキー設定 ===
+        self._setup_toggle_hotkey()
+        
+        # === 性格パラメータの初期表示 ===
+        self.update_stats_display()
+        
         # 準備完了メッセージ
         self.add_log("[システム] すべての準備が整いました")
-        self.add_log("[ヒント] 左Ctrlキーを押している間、録音します")
-        self.set_status("待機中... (左Ctrlキーで録音)", "green")
+        self.add_log("[ヒント] 左Ctrl: 押している間録音（プッシュ・トゥ・トーク）")
+        self.add_log("[ヒント] 右Ctrl: 録音開始/停止（トグルモード）")
+        self.set_status("待機中...", "green")
         
     def _init_components(self) -> None:
         """音声処理・AIコンポーネントを初期化する"""
@@ -78,29 +90,22 @@ class MainWindow:
         # 認識コンポーネント（初回はモデル読み込みに時間がかかる）
         self.add_log("[初期化] 音声認識モデル (Whisper)...")
         self.set_status("Whisperモデル読み込み中...", "orange")
-        self.root.update()  # UIを更新
+        self.root.update()
         self._transcriber = AudioTranscriber()
         
-        # AI整形コンポーネント（Groq API）
+        # AI整形コンポーネント（Groq API + 学習機能）
         self.add_log("[初期化] AI整形 (Groq API)...")
         self.set_status("Groq API 初期化中...", "orange")
-        self.root.update()  # UIを更新
+        self.root.update()
         
-        # APIキーの存在確認（クラウド版のため常に有効）
-        if is_api_key_configured(self._settings):
-            try:
-                self._corrector = TextCorrector()
-                self._ai_enabled = True
-                self.add_log("[初期化] AI整形: 有効 (Groq)")
-            except Exception as e:
-                self._corrector = None
-                self._ai_enabled = False
-                self.add_log(f"[初期化] AI整形: 無効 ({str(e)})")
-        else:
+        try:
+            self._corrector = TextCorrector()
+            self._ai_enabled = True
+            self.add_log("[初期化] AI整形: 有効 (自動判定・学習機能付き)")
+        except Exception as e:
             self._corrector = None
             self._ai_enabled = False
-            self.add_log("[初期化] AI整形: 無効 (APIキー未設定)")
-            self.add_log("[ヒント] settings.py の GROQ_API_KEY を設定してください")
+            self.add_log(f"[初期化] AI整形: 無効 ({str(e)})")
         
         # キーボードハンドラー
         self._keyboard_handler = KeyboardHandler()
@@ -108,35 +113,133 @@ class MainWindow:
         # 変換中フラグ（二重実行防止）
         self._is_processing = False
         
+        # トグル録音状態
+        self._is_toggle_recording = False
+        
+        # デバウンス用（キーリピート防止）
+        self._last_toggle_time = 0.0
+        
+        # 直前の音声認識結果（手動修正用）
+        self._last_voice_text: Optional[str] = None
+        
     def _setup_keyboard_handler(self) -> None:
-        """キーボードハンドラーを設定する"""
+        """キーボードハンドラーを設定する（左Ctrl用）"""
         self._keyboard_handler.on_key_down = self._on_recording_start
         self._keyboard_handler.on_key_up = self._on_recording_stop
         self._keyboard_handler.start()
         
-    def _on_recording_start(self) -> None:
-        """録音開始時の処理（左Ctrlキー押下）"""
-        # 変換中は無視
+    def _setup_toggle_hotkey(self) -> None:
+        """右Ctrlキーのホットキーを設定する"""
+        # キーリピート対策: 押下フラグを使用
+        self._right_ctrl_pressed = False
+        
+        # 右Ctrlのscan_code = 285 でフックを設定
+        # 'right ctrl' や 'ctrl_r' では左右の区別が不確実なため、hookで判定
+        keyboard.hook(self._handle_right_ctrl_event)
+        print("[MainWindow] 右Ctrlキー: ホットキー設定完了")
+        
+    def _handle_right_ctrl_event(self, event: keyboard.KeyboardEvent) -> None:
+        """右Ctrlキーイベントを処理する"""
+        # 右Ctrl (scan_code=285) のみを処理
+        if event.scan_code != 285:
+            return
+            
+        if event.event_type == keyboard.KEY_DOWN:
+            self._on_right_ctrl_press()
+        elif event.event_type == keyboard.KEY_UP:
+            self._on_right_ctrl_release()
+        
+    def _on_right_ctrl_press(self) -> None:
+        """右Ctrlキー押下時（キーリピート対策付き）"""
+        # 既に押下済みなら無視（キーリピート対策）
+        if self._right_ctrl_pressed:
+            return
+        self._right_ctrl_pressed = True
+        
         if self._is_processing:
             return
             
-        # 録音開始
+        # シンプルに録音トグルのみ
+        self._toggle_recording()
+        
+    def _on_right_ctrl_release(self) -> None:
+        """右Ctrlキー離上時"""
+        self._right_ctrl_pressed = False
+        
+    def _learn_manual_correction(self, original_text: str, corrected_text: str) -> None:
+        """
+        手動修正を学習する（別スレッドで実行）
+        
+        Args:
+            original_text: 元のテキスト（音声認識結果）
+            corrected_text: 修正後のテキスト（クリップボード）
+        """
+        try:
+            report = self._corrector.learn_from_correction(original_text, corrected_text)
+            
+            self.root.after(0, lambda: self.add_log(f"[手動修正] {report}"))
+            self.root.after(0, lambda: self.set_status("✔ 学習完了", "blue"))
+            
+            # 性格パラメータを更新
+            self.root.after(0, self.update_stats_display)
+            
+            # 連続学習を防ぐためクリア
+            self._last_voice_text = None
+            
+        except Exception as e:
+            self.root.after(0, lambda: self.add_log(f"[手動修正] エラー: {e}"))
+            self.root.after(0, lambda: self.set_status("エラー発生", "red"))
+            
+        finally:
+            self._is_processing = False
+            self.root.after(2000, lambda: self.set_status("待機中...", "green"))
+        
+    def _toggle_recording(self) -> None:
+        """右Ctrlキーでの録音トグル処理"""
+        if self._is_processing:
+            return
+            
+        if not self._is_toggle_recording:
+            # 録音開始
+            self._is_toggle_recording = True
+            self._recorder.start()
+            self.root.after(0, lambda: self.set_status("● 録音中...（右Ctrlで停止）", "red"))
+            self.root.after(0, lambda: self.add_log("[録音] 開始（トグルモード）"))
+        else:
+            # 録音停止
+            self._is_toggle_recording = False
+            self._stop_and_process()
+        
+    def _on_recording_start(self) -> None:
+        """録音開始時の処理（左Ctrlキー押下）"""
+        if self._is_processing:
+            return
+            
+        # トグル録音中の場合は無視
+        if self._is_toggle_recording:
+            return
+            
         self._recorder.start()
         
-        # UI更新（メインスレッドで実行）
         self.root.after(0, lambda: self.set_status("● 録音中...", "red"))
-        self.root.after(0, lambda: self.add_log(f"[録音] 開始"))
+        self.root.after(0, lambda: self.add_log("[録音] 開始"))
         
     def _on_recording_stop(self) -> None:
         """録音停止時の処理（左Ctrlキー離上）"""
-        # 録音していない場合は無視
+        # トグル録音中の場合は左Ctrl離上を無視
+        if self._is_toggle_recording:
+            return
+            
         if not self._recorder.is_recording():
             return
             
-        # 変換中は無視
         if self._is_processing:
             return
             
+        self._stop_and_process()
+        
+    def _stop_and_process(self) -> None:
+        """録音を停止して処理を開始する"""
         self._is_processing = True
         
         # 録音停止・データ取得
@@ -144,33 +247,49 @@ class MainWindow:
         
         if audio_data is None or len(audio_data) == 0:
             self._is_processing = False
-            self.root.after(0, lambda: self.set_status("待機中... (左Ctrlキーで録音)", "green"))
+            self.root.after(0, lambda: self.set_status("待機中...", "green"))
             self.root.after(0, lambda: self.add_log("[録音] データなし（キャンセル）"))
             return
             
         # UI更新
         duration = len(audio_data) / 16000
+        
+        # 最低録音時間チェック（0.5秒未満はノイズとして無視）
+        if duration < 0.5:
+            self._is_processing = False
+            self.root.after(0, lambda: self.set_status("待機中...", "green"))
+            self.root.after(0, lambda: self.add_log("[録音] 短すぎます（0.5秒未満）"))
+            return
         self.root.after(0, lambda: self.set_status("🎤 変換中...", "orange"))
         self.root.after(0, lambda: self.add_log(f"[録音] 終了 ({duration:.1f}秒)"))
         
-        # 別スレッドで処理を実行（UIがフリーズしないように）
+        # クリップボードの内容を取得（自動判定用）
+        try:
+            clipboard_content = pyperclip.paste()
+        except Exception:
+            clipboard_content = ""
+        
+        # 別スレッドで処理を実行
         threading.Thread(
             target=self._process_audio,
-            args=(audio_data,),
+            args=(audio_data, clipboard_content),
             daemon=True
         ).start()
         
-    def _process_audio(self, audio_data) -> None:
+    def _process_audio(self, audio_data, clipboard_content: str) -> None:
         """
         音声処理パイプラインを実行する（別スレッドで実行）
         
         処理フロー:
         1. Whisperで文字起こし
-        2. Groqで文章整形（AI有効時のみ）
-        3. クリップボード経由で貼り付け
+        2. クリップボードと比較して自動判定
+        3. 修正 → 学習 / 新規入力 → 整形
+        4. クリップボード経由で貼り付け
+        5. 学習完了時は性格パラメータを更新
         
         Args:
             audio_data: 音声データ（float32 numpy配列）
+            clipboard_content: クリップボードの内容
         """
         try:
             # === ステップ1: 音声認識 (Whisper) ===
@@ -185,19 +304,26 @@ class MainWindow:
                 
             self.root.after(0, lambda: self.add_log(f"[認識] {raw_text.strip()}"))
             
-            # === ステップ2: AI整形 (Groq) ===
+            # === 直前の音声認識結果を保存（手動修正用） ===
+            self._last_voice_text = raw_text.strip()
+            
+            # === ステップ2: 自動判定 + AI処理 ===
             if self._ai_enabled and self._corrector is not None:
                 self.root.after(0, lambda: self.set_status("🧠 AI思考中...", "purple"))
                 
-                corrected_text = self._corrector.correct(raw_text.strip())
+                # correct_auto: 修正か新規入力かを自動判定
+                final_text, status_msg = self._corrector.correct_auto(
+                    raw_text.strip(),
+                    clipboard_content
+                )
                 
-                if corrected_text and corrected_text.strip():
-                    final_text = corrected_text.strip()
-                    self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
-                else:
-                    final_text = raw_text.strip()
+                self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
+                self.root.after(0, lambda: self.add_log(f"[判定] {status_msg}"))
+                
+                # === 学習完了時は性格パラメータを更新 ===
+                if "学習完了" in status_msg:
+                    self.root.after(0, self.update_stats_display)
             else:
-                # AI無効時は認識結果をそのまま使用
                 final_text = raw_text.strip()
             
             # === ステップ3: 貼り付け ===
@@ -211,21 +337,46 @@ class MainWindow:
             
         finally:
             self._is_processing = False
-            # 少し待ってから待機状態に戻す
-            self.root.after(2000, lambda: self.set_status("待機中... (左Ctrlキーで録音)", "green"))
+            self.root.after(2000, lambda: self.set_status("待機中...", "green"))
+            
+    def update_stats_display(self) -> None:
+        """
+        性格パラメータの表示を更新する
+        
+        UserProfileから現在のパラメータを取得し、ラベルに反映する。
+        """
+        try:
+            if self._corrector is None or not self._ai_enabled:
+                self._stats_label.config(text="AI機能が無効です")
+                return
+                
+            # プロファイルデータを取得
+            data = self._corrector._user_profile.data
+            
+            # フォーマットして表示
+            stats_text = (
+                f"硬さ: {data.formality:.1f}  "
+                f"情緒: {data.emotionality:.1f}  "
+                f"断定: {data.assertiveness:.1f}  "
+                f"密度: {data.density:.1f}  "
+                f"語彙: {data.vocabulary:.1f}"
+            )
+            
+            self._stats_label.config(text=stats_text)
+            
+        except Exception as e:
+            print(f"[MainWindow] パラメータ表示エラー: {e}")
+            self._stats_label.config(text="データ取得エラー")
         
     def _setup_window(self) -> None:
         """ウィンドウの基本設定を行う"""
-        self.root.title("賢声 - 賢い日本語音声入力")
+        self.root.title("賢声 - 賢い日本語音声入力 (v0.4)")
         
-        # ウィンドウサイズと位置を設定
         self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
-        self.root.minsize(350, 250)
+        self.root.minsize(400, 350)
         
-        # ウィンドウを画面中央に配置
         self._center_window()
         
-        # 閉じるボタンの動作を設定
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
     def _center_window(self) -> None:
@@ -242,7 +393,6 @@ class MainWindow:
         
     def _create_widgets(self) -> None:
         """UIコンポーネントを作成する"""
-        # メインフレーム（パディング付き）
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -250,7 +400,6 @@ class MainWindow:
         header_frame = ttk.Frame(main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # タイトルラベル
         title_label = ttk.Label(
             header_frame,
             text="賢声",
@@ -258,16 +407,14 @@ class MainWindow:
         )
         title_label.pack(side=tk.LEFT)
         
-        # バージョン表示
         version_label = ttk.Label(
             header_frame,
-            text="v0.3",
+            text="v0.4",
             font=("Yu Gothic UI", 9),
             foreground="gray"
         )
         version_label.pack(side=tk.LEFT, padx=(5, 0), pady=(8, 0))
         
-        # 設定ボタン
         self.settings_button = ttk.Button(
             header_frame,
             text="⚙ 設定",
@@ -293,12 +440,24 @@ class MainWindow:
         
         self.log_area = scrolledtext.ScrolledText(
             main_frame,
-            height=12,
+            height=10,
             wrap=tk.WORD,
             font=("Yu Gothic UI", 9),
-            state=tk.DISABLED  # 読み取り専用
+            state=tk.DISABLED
         )
-        self.log_area.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self.log_area.pack(fill=tk.BOTH, expand=True, pady=(5, 10))
+        
+        # === 性格パラメータ表示エリア ===
+        stats_frame = ttk.LabelFrame(main_frame, text="現在の性格パラメータ", padding="5")
+        stats_frame.pack(fill=tk.X, pady=(0, 0))
+        
+        self._stats_label = ttk.Label(
+            stats_frame,
+            text="読み込み中...",
+            font=("Yu Gothic UI", 9),
+            foreground="navy"
+        )
+        self._stats_label.pack(anchor=tk.W)
         
     def _open_settings(self) -> None:
         """設定画面を開く（未実装）"""
@@ -308,45 +467,30 @@ class MainWindow:
         """ウィンドウを閉じる際の処理"""
         self.add_log("[システム] 終了処理中...")
         
-        # キーボード監視を停止
+        # ホットキーを解除
+        keyboard.unhook_all_hotkeys()
+        
         self._keyboard_handler.stop()
-        
-        # 録音を停止
         self._recorder.dispose()
-        
-        # 認識コンポーネントを解放
         self._transcriber.dispose()
         
-        # AI整形コンポーネントを解放
         if self._corrector is not None:
             self._corrector.dispose()
         
-        # ウィンドウを閉じる
         self.root.destroy()
         
     def add_log(self, message: str) -> None:
-        """
-        ログエリアにメッセージを追加する
-        
-        Args:
-            message: 表示するメッセージ
-        """
+        """ログエリアにメッセージを追加する"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}"
         
         self.log_area.config(state=tk.NORMAL)
         self.log_area.insert(tk.END, formatted_message + "\n")
-        self.log_area.see(tk.END)  # 最新行にスクロール
+        self.log_area.see(tk.END)
         self.log_area.config(state=tk.DISABLED)
         
     def set_status(self, status: str, color: str = "gray") -> None:
-        """
-        ステータス表示を更新する
-        
-        Args:
-            status: 表示するステータス文字列
-            color: テキストの色
-        """
+        """ステータス表示を更新する"""
         self.status_label.config(text=status, foreground=color)
         
     def run(self) -> None:
@@ -355,17 +499,11 @@ class MainWindow:
 
 
 def create_main_window() -> MainWindow:
-    """
-    メインウィンドウを作成するファクトリ関数
-    
-    Returns:
-        MainWindow: 初期化されたメインウィンドウ
-    """
+    """メインウィンドウを作成するファクトリ関数"""
     root = tk.Tk()
     return MainWindow(root)
 
 
-# モジュールを直接実行した場合のテスト用
 if __name__ == "__main__":
     window = create_main_window()
     window.run()

@@ -31,8 +31,8 @@ def main():
     
     # 起動メッセージを表示
     window.add_log("[システム] 賢声を起動しました")
-    window.add_log("[ヒント] 左Ctrlキーで音声入力を開始できます")
-    window.add_log("[ヒント] 右Ctrlキーで修正指示モードに切り替わります")
+    window.add_log("[ヒント] 左Ctrl: 押している間録音（プッシュ・トゥ・トーク）")
+    window.add_log("[ヒント] 右Ctrl: 録音開始/停止（トグルモード）")
     
     # メインループを開始
     window.run()

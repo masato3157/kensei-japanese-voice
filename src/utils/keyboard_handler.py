@@ -48,8 +48,9 @@ class KeyboardHandler:
             event: キーボードイベント
         """
         with self._lock:
-            # 左Ctrlキーのみを処理
-            if event.name != "ctrl":
+            # 左Ctrlキーのみを処理（scan_code 29 = 左Ctrl, 285 = 右Ctrl）
+            # event.name == "ctrl" は左右どちらでも一致するため、scan_codeで判定
+            if event.name != "ctrl" or event.scan_code != 29:
                 return
                 
             if event.event_type == keyboard.KEY_DOWN:
