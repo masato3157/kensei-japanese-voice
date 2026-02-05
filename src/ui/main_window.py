@@ -26,9 +26,11 @@ import pyperclip
 from src import __version__
 from src.audio.recorder import AudioRecorder
 from src.audio.transcriber import AudioTranscriber
-from src.ai.corrector import TextCorrector
+from src.ai.hybrid_corrector import HybridCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
+from src.ui.settings_dialog import SettingsDialog
+from src.utils.config_manager import ConfigManager
 
 
 class MainWindow:
@@ -96,18 +98,15 @@ class MainWindow:
         self._transcriber = AudioTranscriber()
         
         # AI整形コンポーネント（Groq API + 学習機能）
-        self.add_log("[初期化] AI整形 (Groq API)...")
-        self.set_status("Groq API 初期化中...", "orange")
-        self.root.update()
-        
+        # === AI整形コンポーネント（ハイブリッド）===
+        self.add_log("[初期化] AI整形エンジン...")
         try:
-            self._corrector = TextCorrector()
+            self._corrector = HybridCorrector()
             self._ai_enabled = True
-            self.add_log("[初期化] AI整形: 有効 (自動判定・学習機能付き)")
         except Exception as e:
             self._corrector = None
             self._ai_enabled = False
-            self.add_log(f"[初期化] AI整形: 無効 ({str(e)})")
+            self.add_log(f"[エラー] AIエンジン初期化失敗: {e}")
         
         # キーボードハンドラー
         self._keyboard_handler = KeyboardHandler()
@@ -279,22 +278,15 @@ class MainWindow:
             # === 直前の音声認識結果を保存（手動修正用） ===
             self._last_voice_text = raw_text.strip()
             
-            # === ステップ2: 自動判定 + AI処理 ===
+            # === ステップ2: AI整形（Hybrid） ===
             if self._ai_enabled and self._corrector is not None:
                 self.root.after(0, lambda: self.set_status("🧠 AI思考中...", "purple"))
                 
-                # correct_auto: 修正か新規入力かを自動判定
-                final_text, status_msg = self._corrector.correct_auto(
-                    raw_text.strip(),
-                    clipboard_content
-                )
+                # 単純な整形処理（モードに応じてCloud/Localが自動選択される）
+                final_text = self._corrector.correct(raw_text.strip())
                 
-                self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
-                self.root.after(0, lambda: self.add_log(f"[判定] {status_msg}"))
-                
-                # === 学習完了時は性格パラメータを更新 ===
-                if "学習完了" in status_msg:
-                    self.root.after(0, self.update_stats_display)
+                if final_text != raw_text.strip():
+                    self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
             else:
                 final_text = raw_text.strip()
             
@@ -312,33 +304,41 @@ class MainWindow:
             self.root.after(2000, lambda: self.set_status("待機中...", "green"))
             
     def update_stats_display(self) -> None:
-        """
-        性格パラメータの表示を更新する
-        
-        UserProfileから現在のパラメータを取得し、ラベルに反映する。
-        """
+        """性格パラメータの表示を更新する"""
         try:
             if self._corrector is None or not self._ai_enabled:
-                self._stats_label.config(text="AI機能が無効です")
+                if hasattr(self, '_stats_label'):
+                    self._stats_label.config(text="AI機能が無効です")
+                return
+            
+            # HybridCorrectorの場合
+            if isinstance(self._corrector, HybridCorrector):
+                try:
+                    config = ConfigManager.get_instance()
+                    mode = config.settings.inference_mode.upper()
+                    if hasattr(self, '_stats_label'):
+                        self._stats_label.config(text=f"AI Mode: {mode}")
+                except:
+                    pass
                 return
                 
-            # プロファイルデータを取得（プロパティ経由）
-            data = self._corrector.user_profile.data
-            
-            # フォーマットして表示
-            stats_text = (
-                f"硬さ: {data.formality:.1f}  "
-                f"情緒: {data.emotionality:.1f}  "
-                f"断定: {data.assertiveness:.1f}  "
-                f"密度: {data.density:.1f}  "
-                f"語彙: {data.vocabulary:.1f}"
-            )
-            
-            self._stats_label.config(text=stats_text)
+            # TextCorrectorの場合（互換性）
+            if hasattr(self._corrector, 'user_profile'):
+                data = self._corrector.user_profile.data
+                stats_text = (
+                    f"硬さ: {data.formality:.1f}  "
+                    f"情緒: {data.emotionality:.1f}  "
+                    f"断定: {data.assertiveness:.1f}  "
+                    f"密度: {data.density:.1f}  "
+                    f"語彙: {data.vocabulary:.1f}"
+                )
+                if hasattr(self, '_stats_label'):
+                    self._stats_label.config(text=stats_text)
             
         except Exception as e:
             print(f"[MainWindow] パラメータ表示エラー: {e}")
-            self._stats_label.config(text="データ取得エラー")
+            if hasattr(self, '_stats_label'):
+                self._stats_label.config(text="データ取得エラー")
         
     def _setup_window(self) -> None:
         """ウィンドウの基本設定を行う"""
@@ -432,8 +432,18 @@ class MainWindow:
         self._stats_label.pack(anchor=tk.W)
         
     def _open_settings(self) -> None:
-        """設定画面を開く（未実装）"""
-        self.add_log("[システム] 設定画面は準備中です...")
+        """設定ダイアログを開く"""
+        from src.ui.settings_dialog import SettingsDialog
+        SettingsDialog(self.root, on_save=self._on_settings_saved)
+    
+    def _on_settings_saved(self) -> None:
+        """設定保存後のコールバック"""
+        # 必要であればコレクターのリロードなどを行う
+        if self._corrector and isinstance(self._corrector, HybridCorrector):
+            self._corrector._reload_engine()
+        
+        self.add_log("[設定] 設定が保存されました")
+        self.update_stats_display()
         
     def _on_closing(self) -> None:
         """ウィンドウを閉じる際の処理"""
@@ -463,8 +473,9 @@ class MainWindow:
         
     def set_status(self, status: str, color: str = "gray") -> None:
         """ステータス表示を更新する"""
-        self.status_label.config(text=status, foreground=color)
-        
+        if hasattr(self, 'status_label'):
+            self.status_label.config(text=status, foreground=color)
+
     def run(self) -> None:
         """メインループを開始する"""
         self.root.mainloop()

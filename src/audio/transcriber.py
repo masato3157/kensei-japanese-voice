@@ -3,7 +3,11 @@
 トランスクライバー - faster-whisperによる音声認識
 
 このモジュールは、faster-whisperを使用した高速な音声認識機能を提供します。
-CPU上でint8量子化を使用し、高速かつ低メモリで動作します。
+GPU（CUDA）が利用可能な場合はfloat16で高速処理、
+CPUのみの場合はint8量子化で実用的な速度を確保します。
+
+環境自動判定機能により、ユーザーが設定を変更することなく
+ハードウェア性能を最大限に活用します。
 """
 
 import numpy as np
@@ -11,41 +15,72 @@ from typing import Optional
 from faster_whisper import WhisperModel
 
 
+def detect_optimal_settings() -> tuple[str, str]:
+    """
+    利用可能なハードウェアを検出し、最適な設定を返す
+    
+    Returns:
+        (device, compute_type) のタプル
+        - GPU搭載機: ("cuda", "float16")
+        - CPU専用機: ("cpu", "int8")
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"[Transcriber] GPU検出: {gpu_name}")
+            return ("cuda", "float16")
+    except ImportError:
+        pass
+    
+    print("[Transcriber] GPUが利用できません。CPUモードで動作します。")
+    return ("cpu", "int8")
+
+
 class AudioTranscriber:
     """
-    音声認識クラス
+    音声認識クラス（環境自動適応型）
     
     faster-whisperを使用して音声データをテキストに変換します。
-    CPU最適化（int8量子化）により、高速に動作します。
+    起動時にGPU/CPUを自動判定し、最適な設定を選択します。
+    
+    - GPU搭載機: CUDA + float16 でリアルタイム認識
+    - CPU専用機: int8量子化で実用的な速度を確保
     
     使用例:
-        transcriber = AudioTranscriber()
+        transcriber = AudioTranscriber()  # 自動設定
         text = transcriber.transcribe(audio_data)
         print(text)
     """
     
     # デフォルト設定
-    DEFAULT_MODEL = "base"       # 軽量モデル（約140MB）
-    DEFAULT_DEVICE = "cpu"       # CPUで実行
-    DEFAULT_COMPUTE_TYPE = "int8"  # int8量子化で高速化
+    DEFAULT_MODEL = "medium"  # バランスの良いmediumモデル
     
     def __init__(
         self,
         model_size: str = DEFAULT_MODEL,
-        device: str = DEFAULT_DEVICE,
-        compute_type: str = DEFAULT_COMPUTE_TYPE
+        device: Optional[str] = None,
+        compute_type: Optional[str] = None
     ):
         """
         トランスクライバーを初期化する
         
         Args:
-            model_size: モデルサイズ ("tiny", "base", "small", "medium", "large-v3")
-            device: 実行デバイス ("cpu" または "cuda")
-            compute_type: 計算精度 ("int8", "float16", "float32")
+            model_size: モデルサイズ (デフォルト: "medium")
+            device: 実行デバイス (省略時は自動検出)
+            compute_type: 計算精度 (省略時は自動選択)
         """
         self._model_size = model_size
-        self._device = device
-        self._compute_type = compute_type
+        
+        # デバイスと計算精度を自動検出（明示的に指定されていない場合）
+        if device is None or compute_type is None:
+            auto_device, auto_compute = detect_optimal_settings()
+            self._device = device or auto_device
+            self._compute_type = compute_type or auto_compute
+        else:
+            self._device = device
+            self._compute_type = compute_type
+            
         self._model: Optional[WhisperModel] = None
         
         # モデルを読み込む
@@ -53,7 +88,8 @@ class AudioTranscriber:
         
     def _load_model(self) -> None:
         """Whisperモデルを読み込む"""
-        print(f"[Transcriber] モデル読み込み中: {self._model_size} ({self._compute_type})...")
+        print(f"[Transcriber] モデル読み込み中: {self._model_size}")
+        print(f"[Transcriber] デバイス: {self._device.upper()}, 精度: {self._compute_type}")
         
         self._model = WhisperModel(
             self._model_size,
