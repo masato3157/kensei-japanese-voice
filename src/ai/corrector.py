@@ -258,6 +258,11 @@ class TextCorrector:
             "learning_enabled": True,
             "auto_detect_enabled": True,
         }
+    
+    @property
+    def user_profile(self) -> "UserProfile":
+        """ユーザープロファイルを取得する（読み取り専用）"""
+        return self._user_profile
         
     def clear_context(self) -> None:
         """会話履歴をクリアする"""

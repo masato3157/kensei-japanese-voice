@@ -16,7 +16,10 @@ from typing import List, Dict
 # 定数
 # ============================================
 
-PROFILE_PATH = "user_profile.json"
+# プロファイルファイルのパス（プロジェクトルート基準）
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+PROFILE_PATH = _PROJECT_ROOT / "user_profile.json"
 
 
 # ============================================

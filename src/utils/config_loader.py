@@ -269,12 +269,8 @@ def _get_setting(key: str, default: Any = None) -> Any:
     return get_settings().get(key, default)
 
 
-# よく使う設定値をモジュールレベル変数として公開
-GROQ_API_KEY = property(lambda self: _get_setting("GROQ_API_KEY"))
-MODEL_NAME = property(lambda self: _get_setting("MODEL_NAME"))
-LLM_TEMPERATURE = property(lambda self: _get_setting("LLM_TEMPERATURE"))
-LLM_MAX_TOKENS = property(lambda self: _get_setting("LLM_MAX_TOKENS"))
-SYSTEM_PROMPT = property(lambda self: get_system_prompt())
+# 注意: 設定値の取得には get_settings() 関数を使用してください
+# 例: api_key = get_settings().get("GROQ_API_KEY")
 
 
 # モジュールを直接実行した場合のテスト用

@@ -9,7 +9,7 @@
 import numpy as np
 import pyaudio
 import threading
-from typing import Optional
+from typing import Optional, List
 
 
 class AudioRecorder:
@@ -36,7 +36,7 @@ class AudioRecorder:
         """レコーダーを初期化する"""
         self._audio: Optional[pyaudio.PyAudio] = None
         self._stream: Optional[pyaudio.Stream] = None
-        self._frames: list[bytes] = []
+        self._frames: List[bytes] = []
         self._is_recording = False
         self._lock = threading.Lock()
         

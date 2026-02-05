@@ -13,6 +13,7 @@ from groq import Groq
 
 from src.utils.config_loader import get_settings, is_api_key_configured
 from src.utils.memory import UserProfile
+from src.utils.dictionary import Dictionary
 
 
 class LearningEngine:
@@ -113,7 +114,7 @@ class LearningEngine:
         original_text: str,
         corrected_text: str,
         profile: UserProfile,
-        dictionary: Optional[Any] = None
+        dictionary: Optional[Dictionary] = None
     ) -> str:
         """
         ユーザーの修正から学習し、プロファイルと辞書を更新する

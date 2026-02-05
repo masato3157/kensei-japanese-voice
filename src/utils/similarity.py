@@ -7,6 +7,10 @@
 """
 
 import difflib
+import logging
+
+# モジュール用のロガーを設定
+logger = logging.getLogger(__name__)
 
 
 class TextSimilarity:
@@ -56,7 +60,7 @@ class TextSimilarity:
             修正と判定された場合True
         """
         sim = TextSimilarity.calculate(original, new_input)
-        print(f"[Similarity] Score: {sim:.2f}")
+        logger.debug(f"[Similarity] Score: {sim:.2f}")
         return 0.3 <= sim < 0.95
 
 

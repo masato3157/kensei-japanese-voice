@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-メインウィンドウ - 賢声のメインUI（v0.4.7 シンプル版）
+メインウィンドウ - 賢声のメインUI
 
 このモジュールは、賢声アプリケーションのメインウィンドウを提供します。
 すべてのコンポーネント（録音、認識、AI整形）を統合し、
 コンテキスト主導の高精度音声入力を実現します。
 
-v0.4.7の機能:
+機能:
 - 左Ctrl: プッシュ・トゥ・トーク録音
 - 右Ctrl: 録音トグル
 - ContextManagerによる文脈参照で同音異義語を判定
-- 学習機能は廃止（シンプル構成）
+- LearningEngineによる文体学習
 """
 
 import tkinter as tk
@@ -20,8 +20,10 @@ from datetime import datetime
 from typing import Optional
 import time
 import keyboard
+import pyperclip
 
 # 内部モジュール
+from src import __version__
 from src.audio.recorder import AudioRecorder
 from src.audio.transcriber import AudioTranscriber
 from src.ai.corrector import TextCorrector
@@ -320,8 +322,8 @@ class MainWindow:
                 self._stats_label.config(text="AI機能が無効です")
                 return
                 
-            # プロファイルデータを取得
-            data = self._corrector._user_profile.data
+            # プロファイルデータを取得（プロパティ経由）
+            data = self._corrector.user_profile.data
             
             # フォーマットして表示
             stats_text = (
@@ -340,7 +342,7 @@ class MainWindow:
         
     def _setup_window(self) -> None:
         """ウィンドウの基本設定を行う"""
-        self.root.title("賢声 - 賢い日本語音声入力 (v0.4)")
+        self.root.title(f"賢声 - 賢い日本語音声入力 (v{__version__})")
         
         self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
         self.root.minsize(400, 350)
@@ -379,7 +381,7 @@ class MainWindow:
         
         version_label = ttk.Label(
             header_frame,
-            text="v0.4",
+            text=f"v{__version__}",
             font=("Yu Gothic UI", 9),
             foreground="gray"
         )

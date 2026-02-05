@@ -107,8 +107,8 @@ class KeyboardHandler:
             
         self._is_running = False
         
-        # フックを解除
-        keyboard.unhook_all()
+        # 自分のフックのみを解除（他モジュールのフックに影響しない）
+        keyboard.unhook(self._handle_key_event)
         
         # 状態をリセット
         self._is_key_pressed = False
