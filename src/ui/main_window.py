@@ -30,6 +30,7 @@ from src.ai.hybrid_corrector import HybridCorrector
 from src.utils.keyboard_handler import KeyboardHandler
 from src.utils.clipboard import paste_text
 from src.ui.settings_dialog import SettingsDialog
+from src.ui.display_window import DisplayWindow
 from src.utils.config_manager import ConfigManager
 
 
@@ -73,6 +74,10 @@ class MainWindow:
         
         # === 性格パラメータの初期表示 ===
         self.update_stats_display()
+        
+        # === ユーザー表示用ミニウィンドウ ===
+        self._display_window = DisplayWindow(self.root)
+        self._display_window.update_text("賢声を起動しました。音声入力を待機中...")
         
         # 準備完了メッセージ
         self.add_log("[システム] すべての準備が整いました")
@@ -275,6 +280,12 @@ class MainWindow:
                 
             self.root.after(0, lambda: self.add_log(f"[認識] {raw_text.strip()}"))
             
+            # === ミニウィンドウに認識結果を表示 ===
+            recognized = raw_text.strip()
+            self._display_window.root.after(
+                0, lambda t=recognized: self._display_window.update_text(f"🎤 {t}")
+            )
+            
             # === 直前の音声認識結果を保存（手動修正用） ===
             self._last_voice_text = raw_text.strip()
             
@@ -287,6 +298,11 @@ class MainWindow:
                 
                 if final_text != raw_text.strip():
                     self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
+                
+                # ミニウィンドウを整形結果で更新
+                self._display_window.root.after(
+                    0, lambda t=final_text: self._display_window.update_text(f"✔ {t}")
+                )
             else:
                 final_text = raw_text.strip()
             
@@ -458,6 +474,10 @@ class MainWindow:
         
         if self._corrector is not None:
             self._corrector.dispose()
+        
+        # ミニウィンドウを閉じる
+        if hasattr(self, '_display_window'):
+            self._display_window.close()
         
         self.root.destroy()
         

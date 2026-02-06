@@ -215,26 +215,31 @@ class HybridCorrector:
         if not self._local_model:
             return "[エラー] ローカルモデルファイルを設定してください"
             
-        # Gemma 2 向けのプロンプト形式 (<start_of_turn>user ... <end_of_turn>)
-        # 返答や解説を抑制し、修正のみを行うように強く指示
-        prompt = f"""<start_of_turn>user
-あなたは優秀な校正AIです。以下のテキストは音声認識の結果です。
-文脈を読み取り、誤字脱字を修正して自然な日本語に書き換えてください。
-決して挨拶や解説は行わず、修正後のテキストのみを出力してください。
+        # Llama 3 向けのプロンプト形式（シンプル版）
+        prompt = f"""<|begin_of_text|><|start_header_id|>user<|end_header_id|>
 
-入力: {text}<end_of_turn>
-<start_of_turn>model
+以下の音声認識結果を、誤字脱字を修正して自然な日本語に書き換えてください。
+挨拶や余計な言葉は不要です。修正後のテキストのみを出力してください。
+
+入力: {text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """
         
         try:
             output = self._local_model(
                 prompt,
                 max_tokens=1024,
-                stop=["<end_of_turn>", "<eos>"],
+                stop=["<|eot_id|>", "<|end_of_text|>"],
                 temperature=0.1,
                 echo=False
             )
             result = output['choices'][0]['text'].strip()
+            
+            # 結果が空の場合は元のテキストを返す
+            if not result:
+                print("[HybridCorrector] 警告: ローカルモデルの出力が空でした")
+                return text
+                
+                
             return result
         except Exception as e:
             print(f"[HybridCorrector] Local推論エラー: {e}")
