@@ -128,6 +128,12 @@ class MainWindow:
         # 直前の音声認識結果（手動修正用）
         self._last_voice_text: Optional[str] = None
         
+        # 逐次認識用のバッファ（v0.6.9）
+        # 各チャンクの認識結果をリストとして保持
+        self._current_text_buffer: list[str] = []
+        # 逐次処理ループの制御フラグ
+        self._is_streaming = False
+        
     def _setup_keyboard_handler(self) -> None:
         """キーボードハンドラーを設定する（左Ctrl用）"""
         self._keyboard_handler.on_key_down = self._on_recording_start
@@ -170,22 +176,6 @@ class MainWindow:
         """右Ctrlキー離上時"""
         self._right_ctrl_pressed = False
         
-    def _toggle_recording(self) -> None:
-        """右Ctrlキーでの録音トグル処理"""
-        if self._is_processing:
-            return
-            
-        if not self._is_toggle_recording:
-            # 録音開始
-            self._is_toggle_recording = True
-            self._recorder.start()
-            self.root.after(0, lambda: self.set_status("● 録音中...（右Ctrlで停止）", "red"))
-            self.root.after(0, lambda: self.add_log("[録音] 開始（トグルモード）"))
-        else:
-            # 録音停止
-            self._is_toggle_recording = False
-            self._stop_and_process()
-        
     def _on_recording_start(self) -> None:
         """録音開始時の処理（左Ctrlキー押下）"""
         if self._is_processing:
@@ -195,11 +185,139 @@ class MainWindow:
         if self._is_toggle_recording:
             return
             
+        # 録音開始
+        self._start_recording_session()
+        
+    def _toggle_recording(self) -> None:
+        """右Ctrlキーでの録音トグル処理"""
+        if self._is_processing:
+            return
+            
+        if not self._is_toggle_recording:
+            # 録音開始
+            self._is_toggle_recording = True
+            self._start_recording_session()
+            self.root.after(0, lambda: self.add_log("[録音] 開始（トグルモード）"))
+        else:
+            # 録音停止
+            self._is_toggle_recording = False
+            self._stop_and_process()
+
+    def _start_recording_session(self) -> None:
+        """録音セッションを開始する（共通処理）"""
         self._recorder.start()
+        self._current_text_buffer = [] # バッファリセット
+        self._is_streaming = True
         
         self.root.after(0, lambda: self.set_status("● 録音中...", "red"))
-        self.root.after(0, lambda: self.add_log("[録音] 開始"))
         
+        # 逐次処理ループを別スレッドで開始
+        threading.Thread(
+            target=self._process_stream_loop,
+            daemon=True
+        ).start()
+
+    def _process_stream_loop(self) -> None:
+        """
+        逐次認識ループ（録音中に並列実行）
+        約1秒ごとに音声チャンクを取得し、ASRにかける
+        """
+        import time
+        import re
+        CHUNK_INTERVAL = 1.0 # 1秒ごとに認識
+        
+        while self._is_streaming and self._recorder.is_recording():
+            time.sleep(CHUNK_INTERVAL)
+            
+            if not self._is_streaming: # sleep中に停止された場合
+                break
+                
+            # 音声チャンクを取得
+            chunk_data = self._recorder.get_audio_chunk()
+            if chunk_data is None or len(chunk_data) == 0:
+                continue
+                
+            # ASR実行（チャンク認識）
+            try:
+                partial_text = self._transcriber.transcribe(chunk_data)
+                
+                if partial_text and partial_text.strip():
+                    # バッファに追加
+                    self._current_text_buffer.append(partial_text.strip())
+                    
+                    # 現在の全テキストを結合（日本語なのでスペースなしで結合）
+                    current_full_text = "".join(self._current_text_buffer)
+                    
+                    # 文末記号で分割 (。, ？, ！)
+                    # 肯定先読み (?<=...) を使って区切り文字を含めて分割する手もあるが、
+                    # シンプルに re.split で分割し、区切り文字をキャプチャする
+                    parts = re.split(r'([。？！])', current_full_text)
+                    
+                    confirmed_text = ""
+                    remaining_text = ""
+                    
+                    if len(parts) >= 3:
+                        # 少なくとも1つの文末記号が含まれている
+                        # 例: ["こんにちは", "。", "元気ですか", "？", "まだ続き"]
+                        
+                        # 確定部分の構築（最後の要素以外）
+                        # 最後の要素が空文字列でないなら、それは未確定部分
+                        # 最後の要素が空文字列なら、ちょうど文末で終わっている
+                        
+                        # 配列の末尾が未確定部分になる可能性があるため、
+                        # 後ろから見て区切り文字でないものを除去する
+                        
+                        last_part = parts[-1]
+                        confirmed_parts = parts[:-1]
+                        
+                        remaining_text = last_part
+                        confirmed_text = "".join(confirmed_parts)
+                        
+                        # バッファをリセットし、未確定部分のみ再セット
+                        self._current_text_buffer = [remaining_text] if remaining_text else []
+                        
+                        # === 確定文の即時処理 ===
+                        if confirmed_text:
+                            self.root.after(0, lambda t=confirmed_text: self.add_log(f"[文確定] {t}"))
+                            
+                            # 校正・貼り付け（別スレッドで実行した方がUIがスムーズだが、
+                            # _process_stream_loop自体が別スレッドなのでここで実行してよい）
+                            self._process_confirmed_text(confirmed_text)
+                    
+                    else:
+                        # 文末記号がない -> 全て未確定
+                        remaining_text = current_full_text
+
+                    # UI更新（未確定部分のみ表示）
+                    if remaining_text:
+                        self.root.after(0, lambda t=remaining_text: self._display_window.update_text(f"🎤 {t} ..."))
+                        # ログにはチャンクごとの追加分を出すと煩雑になるので、文確定時のみログ出力に変更しても良いが、
+                        # 動作確認のため一旦チャンクも出す（ただし頻度が高いので抑制気味に）
+                        # self.root.after(0, lambda t=partial_text: self.add_log(f"[認識(仮)] {t}"))
+                    
+            except Exception as e:
+                print(f"[StreamLoop] Error: {e}")
+
+    def _process_confirmed_text(self, text: str) -> None:
+        """確定した文を校正して貼り付ける"""
+        final_text = text
+        
+        # 校正
+        if self._ai_enabled and self._corrector is not None:
+             self.root.after(0, lambda: self.set_status("🧠 AI校正中...", "purple"))
+             # 一文単位なので高速に終わるはず
+             final_text = self._corrector.correct(text)
+             
+             if final_text != text:
+                 self.root.after(0, lambda t=final_text: self.add_log(f"[校正] {t}"))
+        
+        # 貼り付け
+        if final_text:
+            paste_text(final_text)
+            # 校正完了したらステータスを戻すわけにはいかない（録音中なので）、
+            # UI更新は録音中のものに戻す
+            self.root.after(0, lambda: self.set_status("● 録音中...", "red"))
+
     def _on_recording_stop(self) -> None:
         """録音停止時の処理（左Ctrlキー離上）"""
         # トグル録音中の場合は左Ctrl離上を無視
@@ -217,100 +335,67 @@ class MainWindow:
     def _stop_and_process(self) -> None:
         """録音を停止して処理を開始する"""
         self._is_processing = True
+        self._is_streaming = False # ストリーミングループ停止
         
-        # 録音停止・データ取得
-        audio_data = self._recorder.stop()
+        # 録音停止・残りのデータ取得
+        remaining_data = self._recorder.stop()
         
-        if audio_data is None or len(audio_data) == 0:
-            self._is_processing = False
-            self.root.after(0, lambda: self.set_status("待機中...", "green"))
-            self.root.after(0, lambda: self.add_log("[録音] データなし（キャンセル）"))
-            return
-            
-        # UI更新
-        duration = len(audio_data) / 16000
-        
-        # 最低録音時間チェック（0.5秒未満はノイズとして無視）
-        if duration < 0.5:
-            self._is_processing = False
-            self.root.after(0, lambda: self.set_status("待機中...", "green"))
-            self.root.after(0, lambda: self.add_log("[録音] 短すぎます（0.5秒未満）"))
-            return
-        self.root.after(0, lambda: self.set_status("🎤 変換中...", "orange"))
-        self.root.after(0, lambda: self.add_log(f"[録音] 終了 ({duration:.1f}秒)"))
+        self.root.after(0, lambda: self.set_status("🎤 処理中...", "orange"))
         
         # クリップボードの内容を取得（自動判定用）
         try:
             clipboard_content = pyperclip.paste()
         except Exception:
             clipboard_content = ""
-        
-        # 別スレッドで処理を実行
+            
+        # 最終処理を別スレッドで実行
         threading.Thread(
-            target=self._process_audio,
-            args=(audio_data, clipboard_content),
+            target=self._process_audio_final,
+            args=(remaining_data, clipboard_content),
             daemon=True
         ).start()
         
-    def _process_audio(self, audio_data, clipboard_content: str) -> None:
-        """
-        音声処理パイプラインを実行する（別スレッドで実行）
-        
-        処理フロー:
-        1. Whisperで文字起こし
-        2. クリップボードと比較して自動判定
-        3. 修正 → 学習 / 新規入力 → 校正
-        4. クリップボード経由で貼り付け
-        5. 学習完了時は性格パラメータを更新
-        
-        Args:
-            audio_data: 音声データ（float32 numpy配列）
-            clipboard_content: クリップボードの内容
-        """
+    def _process_audio_final(self, audio_data, clipboard_content: str) -> None:
+        """最終的な音声処理と校正（処理完了後）"""
         try:
-            # === ステップ1: 音声認識 (Whisper) ===
-            self.root.after(0, lambda: self.set_status("🎤 変換中...", "orange"))
+            # 残りの音声を認識
+            if audio_data is not None and len(audio_data) > 0:
+                last_text = self._transcriber.transcribe(audio_data)
+                if last_text and last_text.strip():
+                    self._current_text_buffer.append(last_text.strip())
+                    self.root.after(0, lambda t=last_text: self.add_log(f"[認識(残)] {t}"))
+
+            # 未確定バッファに残っているテキストを処理
+            full_text = "".join(self._current_text_buffer).strip()
             
-            raw_text = self._transcriber.transcribe(audio_data)
-            
-            if not raw_text or not raw_text.strip():
+            if not full_text:
                 self.root.after(0, lambda: self.add_log("[認識] テキストなし"))
                 self.root.after(0, lambda: self.set_status("待機中...", "green"))
+                self._is_processing = False
                 return
-                
-            self.root.after(0, lambda: self.add_log(f"[認識] {raw_text.strip()}"))
+
+            self.root.after(0, lambda: self.add_log(f"[認識(確定)] {full_text}"))
             
-            # === ミニウィンドウに認識結果を表示 ===
-            recognized = raw_text.strip()
-            self._display_window.root.after(
-                0, lambda t=recognized: self._display_window.update_text(f"🎤 {t}")
-            )
+            # === 校正フェーズ (残余分) ===
+            final_text = full_text
             
-            # === 直前の音声認識結果を保存（手動修正用） ===
-            self._last_voice_text = raw_text.strip()
-            
-            # === ステップ2: AI校正（Hybrid） ===
             if self._ai_enabled and self._corrector is not None:
                 self.root.after(0, lambda: self.set_status("🧠 AI校正中...", "purple"))
                 
-                # 単純な校正処理（モードに応じてCloud/Localが自動選択される）
-                final_text = self._corrector.correct(raw_text.strip())
+                final_text = self._corrector.correct(full_text)
                 
-                if final_text != raw_text.strip():
+                if final_text != full_text:
                     self.root.after(0, lambda: self.add_log(f"[校正] {final_text}"))
                 
-                # ミニウィンドウを整形結果で更新
+                # ミニウィンドウ更新
                 self._display_window.root.after(
                     0, lambda t=final_text: self._display_window.update_text(f"✔ {t}")
                 )
-            else:
-                final_text = raw_text.strip()
             
-            # === ステップ3: 貼り付け ===
+            # 貼り付け
             paste_text(final_text)
-            
-            self.root.after(0, lambda: self.set_status("✔ 貼り付け完了", "blue"))
-                
+            self.root.after(0, lambda: self.set_status("✔ 完了", "blue"))
+
         except Exception as e:
             self.root.after(0, lambda: self.add_log(f"[エラー] {str(e)}"))
             self.root.after(0, lambda: self.set_status("エラー発生", "red"))

@@ -149,6 +149,28 @@ class AudioRecorder:
             
             self._frames = []
             return audio_float32
+            
+    def get_audio_chunk(self) -> Optional[np.ndarray]:
+        """
+        現在の録音バッファからデータを取得し、バッファをクリアする（逐次処理用）
+        
+        Returns:
+            前回取得時以降の音声データ（float32）。データがない場合はNone
+        """
+        with self._lock:
+            if not self._is_recording or not self._frames:
+                return None
+                
+            # バイトデータをnumpy配列に変換
+            audio_bytes = b''.join(self._frames)
+            audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+            
+            # float32に変換
+            audio_float32 = audio_int16.astype(np.float32) / 32768.0
+            
+            # バッファをクリア（取得した分は削除）
+            self._frames = []
+            return audio_float32
     
     def is_recording(self) -> bool:
         """
