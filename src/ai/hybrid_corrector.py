@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-ハイブリッド・コレクター - Cloud/Local併用型AIテキスト整形
+ハイブリッド・コレクター - Cloud/Local併用型AIテキスト校正
 
 このモジュールは、設定に応じてGroq（クラウド）またはLFM（ローカルLLM）を
-切り替えて使用するテキスト整形機能を提供します。
+切り替えて使用するテキスト校正機能を提供します。
 """
 
 import os
@@ -12,6 +12,7 @@ from pathlib import Path
 
 # ConfigManager
 from src.utils.config_manager import ConfigManager
+import src.utils.config_loader as config_loader
 
 # Cloud: Groq
 try:
@@ -30,7 +31,7 @@ except ImportError:
 
 class HybridCorrector:
     """
-    ハイブリッドAIテキスト整形クラス
+    ハイブリッドAIテキスト校正クラス
     
     設定（ConfigManager）に基づいて、以下のいずれかのエンジンを使用します：
     1. Cloud Mode: Groq API (Llama 3 70B等) - 高精度、高速、ネット必須
@@ -44,6 +45,7 @@ class HybridCorrector:
     def __init__(self):
         """コレクターを初期化する"""
         self._config = ConfigManager.get_instance()
+        self._config_loader = config_loader  # モジュールへの参照を保持
         self._groq_client: Optional['Groq'] = None
         self._local_model: Optional['Llama'] = None
         self._last_mode: Optional[str] = None
@@ -155,13 +157,13 @@ class HybridCorrector:
             
     def correct(self, text: str) -> str:
         """
-        テキストを整形する
+        テキストを校正する
         
         Args:
             text: 入力テキスト（音声認識結果）
             
         Returns:
-            整形後のテキスト
+            校正後のテキスト
         """
         if not text:
             return ""
@@ -186,14 +188,17 @@ class HybridCorrector:
             return text
             
     def _correct_cloud(self, text: str) -> str:
-        """Groq APIを使用して整形"""
+        """Groq APIを使用して校正"""
         if not self._groq_client:
             return "[エラー] Groq APIキーを設定してください"
             
-        system_prompt = (
-            "あなたは優秀な編集者です。ユーザーの音声認識テキストを、意味を変えずに読みやすく整えてください。"
-            "余計な返事はせず、修正後のテキストのみを出力してください。"
-        )
+        # config_loaderからシステムプロンプトを取得（一元管理）
+        system_prompt = self._config_loader.get_system_prompt()
+        
+        # 辞書セクションを追加
+        dictionary = self._config_loader.load_dictionary()
+        if dictionary:
+            system_prompt += self._config_loader.build_dictionary_section(dictionary)
         
         try:
             response = self._groq_client.chat.completions.create(
@@ -211,36 +216,41 @@ class HybridCorrector:
             return f"[エラー] Cloud推論失敗: {str(e)[:50]}..."
             
     def _correct_local(self, text: str) -> str:
-        """ローカルLLMを使用して整形"""
+        """ローカルLLMを使用して校正"""
         if not self._local_model:
             return "[エラー] ローカルモデルファイルを設定してください"
             
-        # Llama 3 向けのプロンプト形式（シンプル版）
-        prompt = f"""<|begin_of_text|><|start_header_id|>user<|end_header_id|>
-
-以下の音声認識結果を、誤字脱字を修正して自然な日本語に書き換えてください。
-挨拶や余計な言葉は不要です。修正後のテキストのみを出力してください。
-
-入力: {text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-"""
+        # config_loaderからシステムプロンプトを取得
+        system_prompt = self._config_loader.get_system_prompt()
         
+        # 辞書セクションを追加
+        dictionary = self._config_loader.load_dictionary()
+        if dictionary:
+            system_prompt += self._config_loader.build_dictionary_section(dictionary)
+            
         try:
-            output = self._local_model(
-                prompt,
+            # Gemma等の一部のモデルは System role に対応していないため、
+            # システムプロンプトをユーザーメッセージに結合して送信する
+            combined_prompt = f"{system_prompt}\n\n入力テキスト:\n{text}"
+            
+            # Chat Completion APIを使用
+            response = self._local_model.create_chat_completion(
+                messages=[
+                    {"role": "user", "content": combined_prompt}
+                ],
                 max_tokens=1024,
-                stop=["<|eot_id|>", "<|end_of_text|>"],
                 temperature=0.1,
-                echo=False
             )
-            result = output['choices'][0]['text'].strip()
+            
+            result = response['choices'][0]['message']['content'].strip()
             
             # 結果が空の場合は元のテキストを返す
             if not result:
                 print("[HybridCorrector] 警告: ローカルモデルの出力が空でした")
                 return text
                 
-                
             return result
+            
         except Exception as e:
             print(f"[HybridCorrector] Local推論エラー: {e}")
             return f"[エラー] Local推論失敗: {str(e)[:50]}..."

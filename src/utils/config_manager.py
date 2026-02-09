@@ -44,6 +44,10 @@ class AppConfig:
     
     # Whisper設定
     whisper_model_size: str = "medium"
+    
+    # ASRエンジン設定 ("kotoba", "faster_whisper", "auto")
+    # 設計思想上の主系は "kotoba"。 "faster_whisper" は低スペック環境用のフォールバック。
+    asr_engine: str = "auto"
 
 
 class ConfigManager:
@@ -184,6 +188,7 @@ if __name__ == "__main__":
     print(f"推論モード: {config.settings.inference_mode}")
     print(f"Groqモデル: {config.settings.groq_model_id}")
     print(f"Whisperサイズ: {config.settings.whisper_model_size}")
+    print(f"ASRエンジン: {config.settings.asr_engine}")
     print(f"クラウドモード: {config.is_cloud_mode()}")
     print(f"Groq設定済み: {config.is_groq_configured()}")
     

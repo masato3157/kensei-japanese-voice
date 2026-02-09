@@ -1,109 +1,135 @@
 # -*- coding: utf-8 -*-
 """
-トランスクライバー - faster-whisperによる音声認識
+トランスクライバー - 音声認識エンジン (Kotoba-Whisper / Faster Whisper)
 
-このモジュールは、faster-whisperを使用した高速な音声認識機能を提供します。
-GPU（CUDA）が利用可能な場合はfloat16で高速処理、
-CPUのみの場合はint8量子化で実用的な速度を確保します。
+このモジュールは、以下の音声認識エンジンを提供します。
 
-環境自動判定機能により、ユーザーが設定を変更することなく
-ハードウェア性能を最大限に活用します。
+1. Kotoba-Whisper (Main): Transformersベース。高精度な日本語認識、文体維持。
+2. Faster Whisper (Fallback): CTranslate2ベース。軽量・高速、低スペック環境用。
+
+環境設定または自動判定により、最適なエンジンを選択して初期化します。
 """
 
 import numpy as np
-from typing import Optional
-from faster_whisper import WhisperModel
+import threading
+from typing import Optional, Literal
+from src.utils.config_manager import ConfigManager
 
-
-def detect_optimal_settings() -> tuple[str, str]:
-    """
-    利用可能なハードウェアを検出し、最適な設定を返す
-    
-    Returns:
-        (device, compute_type) のタプル
-        - GPU搭載機: ("cuda", "float16")
-        - CPU専用機: ("cpu", "int8")
-    """
-    try:
-        import torch
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            print(f"[Transcriber] GPU検出: {gpu_name}")
-            return ("cuda", "float16")
-    except ImportError:
-        pass
-    
-    print("[Transcriber] GPUが利用できません。CPUモードで動作します。")
-    return ("cpu", "int8")
+# エンジンの種類
+ENGINE_KOTOBA = "kotoba"
+ENGINE_FASTER = "faster_whisper"
 
 
 class AudioTranscriber:
     """
-    音声認識クラス（環境自動適応型）
+    音声認識クラス（マルチエンジン対応）
     
-    faster-whisperを使用して音声データをテキストに変換します。
-    起動時にGPU/CPUを自動判定し、最適な設定を選択します。
-    
-    - GPU搭載機: CUDA + float16 でリアルタイム認識
-    - CPU専用機: int8量子化で実用的な速度を確保
-    
-    使用例:
-        transcriber = AudioTranscriber()  # 自動設定
-        text = transcriber.transcribe(audio_data)
-        print(text)
+    設定に基づいて Kotoba-Whisper または Faster Whisper を初期化し、
+    音声データをテキストに変換します。
     """
-    
-    # デフォルト設定
-    DEFAULT_MODEL = "medium"  # バランスの良いmediumモデル
     
     def __init__(
         self,
-        model_size: str = DEFAULT_MODEL,
+        model_size: str = "medium",
         device: Optional[str] = None,
-        compute_type: Optional[str] = None
+        compute_type: Optional[str] = None,
+        engine: Optional[str] = None
     ):
         """
         トランスクライバーを初期化する
         
         Args:
-            model_size: モデルサイズ (デフォルト: "medium")
-            device: 実行デバイス (省略時は自動検出)
-            compute_type: 計算精度 (省略時は自動選択)
+            model_size: モデルサイズ (Faster Whisper用。Kotobaは固定)
+            device:実行デバイス ("cuda" or "cpu"。省略時は自動検出)
+            compute_type: 計算精度 (Faster Whisper用。省略時は自動選択)
+            engine: エンジン指定 ("kotoba", "faster_whisper", "auto"。省略時はConfigManagerから取得)
         """
-        self._model_size = model_size
+        self._config = ConfigManager.get_instance()
         
-        # デバイスと計算精度を自動検出（明示的に指定されていない場合）
-        if device is None or compute_type is None:
-            auto_device, auto_compute = detect_optimal_settings()
-            self._device = device or auto_device
-            self._compute_type = compute_type or auto_compute
+        # エンジンの決定
+        self._target_engine = engine or self._config.settings.asr_engine
+        if self._target_engine == "auto":
+            import torch
+            has_gpu = torch.cuda.is_available()
+            # GPUがあるなら Kotoba (Main), なければ Faster (Fallback)
+            self._target_engine = ENGINE_KOTOBA if has_gpu else ENGINE_FASTER
+            
+        print(f"[Transcriber] 選択されたエンジン: {self._target_engine}")
+
+        # デバイスの決定
+        if device is None:
+            import torch
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self._device = device
-            self._compute_type = compute_type
-            
-        self._model: Optional[WhisperModel] = None
+
+        self._model_size = model_size
+        self._compute_type = compute_type
         
-        # モデルを読み込む
+        # モデルインスタンス
+        self._pipe = None  # Kotoba-Whisper用 (pipeline)
+        self._model = None # Faster Whisper用 (WhisperModel)
+        self._lock = threading.Lock() # スレッドセーフ用
+        
+        # モデル読み込み
         self._load_model()
         
     def _load_model(self) -> None:
-        """Whisperモデルを読み込む"""
-        print(f"[Transcriber] モデル読み込み中: {self._model_size}")
-        print(f"[Transcriber] デバイス: {self._device.upper()}, 精度: {self._compute_type}")
+        """選択されたエンジンに基づいてモデルを読み込む"""
+        try:
+            if self._target_engine == ENGINE_KOTOBA:
+                self._load_kotoba_whisper()
+            else:
+                self._load_faster_whisper()
+        except Exception as e:
+            print(f"[Transcriber] モデル読み込みエラー: {e}")
+            # エラー時はFallbackとしてFaster Whisperを試みる（Kotoba失敗時など）
+            if self._target_engine == ENGINE_KOTOBA:
+                print("[Transcriber] Kotoba-Whisperの読み込みに失敗しました。Faster Whisperへの切り替えを試みます。")
+                self._target_engine = ENGINE_FASTER
+                self._load_faster_whisper()
+            else:
+                raise e
+
+    def _load_kotoba_whisper(self) -> None:
+        """Kotoba-Whisper v1.0 をロードする (Transformers)"""
+        print("[Transcriber] Kotoba-Whisper v1.0 (Transformers) を読み込み中...")
+        from transformers import pipeline
+        import torch
+
+        # モデルID (v1.0を使用)
+        model_id = "kotoba-tech/kotoba-whisper-v1.0"
         
+        torch_dtype = torch.float16 if self._device == "cuda" else torch.float32
+        
+        self._pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model_id,
+            torch_dtype=torch_dtype,
+            device=self._device,
+            chunk_length_s=30,
+            batch_size=1, # リアルタイム用途なのでバッチサイズ1
+            trust_remote_code=True
+        )
+        print(f"[Transcriber] Kotoba-Whisper 読み込み完了 (Device: {self._device})")
+
+    def _load_faster_whisper(self) -> None:
+        """Faster Whisper をロードする"""
+        print(f"[Transcriber] Faster Whisper ({self._model_size}) を読み込み中...")
+        from faster_whisper import WhisperModel
+        
+        # compute_typeの自動決定
+        if self._compute_type is None:
+            self._compute_type = "float16" if self._device == "cuda" else "int8"
+            
         self._model = WhisperModel(
             self._model_size,
             device=self._device,
             compute_type=self._compute_type
         )
-        
-        print(f"[Transcriber] モデル読み込み完了")
-        
-    def transcribe(
-        self,
-        audio_data: np.ndarray,
-        language: str = "ja"
-    ) -> str:
+        print(f"[Transcriber] Faster Whisper 読み込み完了 (Device: {self._device}, Type: {self._compute_type})")
+
+    def transcribe(self, audio_data: np.ndarray, language: str = "ja") -> str:
         """
         音声データをテキストに変換する
         
@@ -112,83 +138,116 @@ class AudioTranscriber:
             language: 認識言語（デフォルト: 日本語）
             
         Returns:
-            認識されたテキスト
+            認識されたテキスト（生テキスト）
         """
-        if self._model is None:
-            raise RuntimeError("モデルが読み込まれていません")
-            
         if audio_data is None or len(audio_data) == 0:
             return ""
             
-        # 音声が短すぎる場合（0.5秒未満）はスキップ
-        if len(audio_data) < 8000:  # 16kHz * 0.5秒
+        # 短すぎる音声はスキップ
+        if len(audio_data) < 8000: # 0.5秒
             return ""
-        
-        # faster-whisperで文字起こし
-        # beam_size=1 で高速化、vad_filter=True でノイズ除去
-        segments, info = self._model.transcribe(
-            audio_data,
-            language=language,
-            beam_size=1,           # 高速化のため1に設定
-            vad_filter=True,       # Voice Activity Detectionでノイズ除去
-            vad_parameters={
-                "min_silence_duration_ms": 500,  # 500ms以上の無音で区切る
-            }
-        )
-        
-        # セグメントを結合してテキストを生成
-        text_parts = []
-        for segment in segments:
-            text_parts.append(segment.text.strip())
+
+        with self._lock:
+            if self._target_engine == ENGINE_KOTOBA:
+                return self._transcribe_kotoba(audio_data, language)
+            else:
+                return self._transcribe_faster(audio_data, language)
+
+    def _transcribe_kotoba(self, audio_data: np.ndarray, language: str) -> str:
+        """Kotoba-Whisperによる推論"""
+        if self._pipe is None:
+            return ""
             
-        result = " ".join(text_parts)
-        
-        return result
-    
+        try:
+            # パイプラインは通常ファイルパスやbytesを期待するが、samping_rate指定でnumpy arrayも通せる場合が多い。
+            # ただしtransformersのバージョンによる。安全のため辞書形式で渡す。
+            # (raw audio, sampling_rate)
+            
+            # audio_data は float32, 16kHz であることが前提
+            prediction = self._pipe(
+                {"raw": audio_data, "sampling_rate": 16000},
+                generate_kwargs={
+                    "language": "japanese", # Kotobaは日本語特化だが念のため指定
+                    "task": "transcribe",
+                    "num_beams": 1, # 高速化と余計な探索抑制
+                    "do_sample": False # 決定論的に
+                },
+                return_timestamps=False
+            )
+            
+            text = prediction["text"].strip()
+            return text
+            
+        except Exception as e:
+            print(f"[Transcriber] Kotoba推論エラー: {e}")
+            return ""
+
+    def _transcribe_faster(self, audio_data: np.ndarray, language: str) -> str:
+        """Faster Whisperによる推論"""
+        if self._model is None:
+            return ""
+            
+        try:
+            segments, _ = self._model.transcribe(
+                audio_data,
+                language=language,
+                beam_size=1,
+                vad_filter=True, # Faster-WhisperのVADは優秀なので使う
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
+            
+            text_parts = [segment.text.strip() for segment in segments]
+            return " ".join(text_parts)
+            
+        except Exception as e:
+            print(f"[Transcriber] Faster推論エラー: {e}")
+            return ""
+
     def get_model_info(self) -> dict:
-        """
-        現在のモデル情報を返す
-        
-        Returns:
-            モデル情報の辞書
-        """
+        """現在のモデル情報を返す"""
         return {
-            "model_size": self._model_size,
+            "engine": self._target_engine,
             "device": self._device,
-            "compute_type": self._compute_type,
-            "loaded": self._model is not None
+            "loaded": (self._pipe is not None) or (self._model is not None)
         }
     
     def dispose(self) -> None:
         """リソースを解放する"""
-        self._model = None
+        with self._lock:
+            self._pipe = None
+            self._model = None
+            import gc
+            gc.collect()
 
 
-# モジュールを直接実行した場合のテスト用
+# テスト用
 if __name__ == "__main__":
     import time
     
-    print("=== Transcriber テスト ===")
+    print("=== Transcriber Dual Engine Test ===")
     
-    # モデル読み込み
-    start_time = time.time()
-    transcriber = AudioTranscriber()
-    load_time = time.time() - start_time
-    print(f"モデル読み込み時間: {load_time:.2f} 秒")
-    
-    # テスト用のダミー音声（無音）を生成
-    dummy_audio = np.zeros(16000 * 2, dtype=np.float32)  # 2秒の無音
-    
-    print("\nダミー音声で認識テスト...")
-    start_time = time.time()
-    result = transcriber.transcribe(dummy_audio)
-    transcribe_time = time.time() - start_time
-    
-    print(f"認識結果: '{result}'")
-    print(f"認識時間: {transcribe_time:.2f} 秒")
-    
-    print("\nモデル情報:")
-    print(transcriber.get_model_info())
-    
-    transcriber.dispose()
-    print("\nテスト終了")
+    # テスト1: Faster Whisper (強制)
+    print("\n--- Testing Faster Whisper ---")
+    try:
+        t_faster = AudioTranscriber(engine=ENGINE_FASTER)
+        dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
+        start = time.time()
+        res = t_faster.transcribe(dummy_audio)
+        print(f"Result: '{res}' ({time.time() - start:.2f}s)")
+        t_faster.dispose()
+    except Exception as e:
+        print(f"Faster Whisper Test Failed: {e}")
+
+    # テスト2: Kotoba-Whisper (強制 - GPU推奨だがCPUでも動くか確認)
+    print("\n--- Testing Kotoba-Whisper ---")
+    try:
+        # CPU環境で重すぎる場合は中断される可能性があることに注意
+        t_kotoba = AudioTranscriber(engine=ENGINE_KOTOBA)
+        start = time.time()
+        res = t_kotoba.transcribe(dummy_audio)
+        print(f"Result: '{res}' ({time.time() - start:.2f}s)")
+        t_kotoba.dispose()
+    except Exception as e:
+        print(f"Kotoba-Whisper Test Failed: {e}")
+        
+    print("\nTest Finished")

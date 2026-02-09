@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-コレクター - Groq APIによる超高速AIテキスト整形（自動判定版）
+コレクター - Groq APIによる超高速AIテキスト校正（自動判定版）
 
 このモジュールは、Groqクラウドを使用して
-音声認識結果を読みやすく整形する機能を提供します。
+音声認識結果を読みやすく校正する機能を提供します。
 v0.4では、クリップボードの内容と比較して「修正」か「新規入力」かを自動判定します。
 """
 
@@ -23,10 +23,10 @@ from src.utils.similarity import TextSimilarity
 
 class TextCorrector:
     """
-    AIテキスト整形クラス（自動判定版）
+    AIテキスト校正クラス（自動判定版）
     
     Groq APIを使用して、音声認識されたテキストを
-    文法的に正しく、読みやすい形式に整形します。
+    文法的に正しく、読みやすい形式に校正します。
     
     v0.4の追加機能:
     - UserProfile: ユーザーの文体設定を反映
@@ -38,7 +38,7 @@ class TextCorrector:
     使用例:
         corrector = TextCorrector()
         
-        # 通常の整形
+        # 通常の校正
         result = corrector.correct("えーとこれは検性のテストです")
         
         # 自動判定（クリップボードと比較）
@@ -118,7 +118,7 @@ class TextCorrector:
         入力テキスト + 文脈情報（ContextManager）を結合
         
         Args:
-            text: 整形対象のテキスト
+            text: 校正対象のテキスト
             
         Returns:
             完全なユーザープロンプト
@@ -137,13 +137,13 @@ class TextCorrector:
         
     def correct(self, text: str) -> str:
         """
-        テキストをAIで整形する（通常入力フロー）
+        テキストをAIで校正する（通常入力フロー）
         
         Args:
-            text: 整形対象のテキスト（音声認識結果）
+            text: 校正対象のテキスト（音声認識結果）
             
         Returns:
-            整形されたテキスト
+            校正されたテキスト
         """
         if self._client is None:
             raise RuntimeError("Groqクライアントが初期化されていません")
@@ -190,7 +190,7 @@ class TextCorrector:
             return result
             
         except Exception as e:
-            print(f"[Corrector] 整形エラー: {e}")
+            print(f"[Corrector] 校正エラー: {e}")
             # エラー時は元のテキストをそのまま返す
             return text.strip()
             
@@ -218,7 +218,7 @@ class TextCorrector:
         
         判定ロジック:
         - 類似度 0.3〜0.95 → 修正として学習
-        - それ以外 → 新規入力として整形
+        - それ以外 → 新規入力として校正
         
         Args:
             voice_text: 音声認識結果
@@ -238,7 +238,7 @@ class TextCorrector:
             report = self.learn_from_correction(clipboard_text, voice_text)
             return voice_text, f"学習完了: {report}"
         else:
-            # 新規入力として整形
+            # 新規入力として校正
             print("[Corrector] 新規入力判定")
             return self.correct(voice_text), "通常入力"
     

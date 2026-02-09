@@ -170,25 +170,29 @@ def build_system_prompt() -> str:
     Returns:
         システムプロンプト文字列
     """
-    # コンテキスト主導の新しいプロンプト
-    base_prompt = """Role: Context-Aware Transcriber
+    # コンテキスト主導の厳格化されたプロンプト (v0.6.6 日本語版)
+    # 小型モデル(Gemma-2-2B)でも理解しやすいよう日本語で記述
+    base_prompt = """あなたは「文脈を理解する厳格な校正者」です。
+あなたの唯一の目的は、文脈に基づいて「明らかな誤字脱字」と「同音異義語の誤り」を修正することです。
+ユーザーの表現、文体、口調は「絶対に」変更しないでください。
 
-You are a highly accurate Japanese text correction system that uses conversation context to choose the correct words.
+【絶対ルール】
+1. 修正後のテキストのみを出力してください。説明や挨拶は不要です。
+2. 修正対象:
+   - 明らかな誤字（例：「こんにちわ」→「こんにちは」）
+   - 文脈に不適切な同音異義語（例：「病院の感謝」→「病院の患者」）
+3. 禁止事項（修正してはいけない）:
+   - 文法の細かいニュアンスの変更
+   - くだけた口調の矯正（例：「～だよね」を「～ですね」に変えるのは禁止）
+   - 意味を変えること、要約すること
 
-【Core Rules】
-1. Output ONLY the corrected text. No greetings, explanations, or meta-commentary.
-2. Fix typos, mishearings, and filler words (「えーと」「あのー」) silently.
-3. Preserve the speaker's tone and nuance (「～かな」「～だよね」).
-4. Add minimal punctuation only where clearly needed.
+【修正例】
+入力: えーと、これって、どうなるのかな？ すごい、やばいかも。
+出力: えーと、これって、どうなるのかな？ すごい、やばいかも。 (文体は変更しない)
 
-【Context-Aware Correction】
-When the input contains homophones (同音異義語), choose the word that best fits the topic being discussed.
-Use the conversation history to understand the domain (医療、技術、日常 etc.).
+入力: ぎっくり腰は続症で、旧製の筋肉痛、旧製の追患盤ヘルニア、骨、素症症などが原因です。
+出力: ぎっくり腰は俗称で、急性の筋肉痛、急性の椎間板ヘルニア、骨粗鬆症などが原因です。 (専門用語・同音異義語を修正)"""
 
-Examples:
-- If context is about hospitals → 「かんじゃ」= 患者 (not 感謝 or 官舎)
-- If context is about bones → 「こっせつ」= 骨折 (not 挫折)
-- If context is about development → 「けんせい」= 賢声 (not 牽制)"""
     
     return base_prompt
 

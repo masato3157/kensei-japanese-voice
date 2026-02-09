@@ -104,7 +104,7 @@ class MainWindow:
         
         # AI整形コンポーネント（Groq API + 学習機能）
         # === AI整形コンポーネント（ハイブリッド）===
-        self.add_log("[初期化] AI整形エンジン...")
+        self.add_log("[初期化] AI校正エンジン...")
         try:
             self._corrector = HybridCorrector()
             self._ai_enabled = True
@@ -259,7 +259,7 @@ class MainWindow:
         処理フロー:
         1. Whisperで文字起こし
         2. クリップボードと比較して自動判定
-        3. 修正 → 学習 / 新規入力 → 整形
+        3. 修正 → 学習 / 新規入力 → 校正
         4. クリップボード経由で貼り付け
         5. 学習完了時は性格パラメータを更新
         
@@ -289,15 +289,15 @@ class MainWindow:
             # === 直前の音声認識結果を保存（手動修正用） ===
             self._last_voice_text = raw_text.strip()
             
-            # === ステップ2: AI整形（Hybrid） ===
+            # === ステップ2: AI校正（Hybrid） ===
             if self._ai_enabled and self._corrector is not None:
-                self.root.after(0, lambda: self.set_status("🧠 AI思考中...", "purple"))
+                self.root.after(0, lambda: self.set_status("🧠 AI校正中...", "purple"))
                 
-                # 単純な整形処理（モードに応じてCloud/Localが自動選択される）
+                # 単純な校正処理（モードに応じてCloud/Localが自動選択される）
                 final_text = self._corrector.correct(raw_text.strip())
                 
                 if final_text != raw_text.strip():
-                    self.root.after(0, lambda: self.add_log(f"[整形] {final_text}"))
+                    self.root.after(0, lambda: self.add_log(f"[校正] {final_text}"))
                 
                 # ミニウィンドウを整形結果で更新
                 self._display_window.root.after(
