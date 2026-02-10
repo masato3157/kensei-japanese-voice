@@ -7,9 +7,13 @@
 
 エンジン切り替え（Cloud/Local）や、モデルパスなどの
 ユーザー設定を管理します。
+
+APIキーはセキュリティ上の理由からconfig.jsonには保存せず、
+環境変数またはlocal_settings.py経由で取得します。
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, asdict
@@ -35,8 +39,7 @@ class AppConfig:
     # 推論モード: "cloud" (Groq) または "local" (LFM)
     inference_mode: str = "cloud"
     
-    # Groq API設定
-    groq_api_key: str = ""
+    # Groq API設定（APIキーはセキュリティ上、ここには保存しない）
     groq_model_id: str = "llama-3.3-70b-versatile"
     
     # ローカルLLM設定
@@ -168,13 +171,43 @@ class ConfigManager:
     
     def is_groq_configured(self) -> bool:
         """Groq APIキーが設定されているかを返す"""
-        key = self._settings.groq_api_key
-        return key and len(key) > 10 and key != "YOUR_API_KEY_HERE"
+        key = get_groq_api_key()
+        return bool(key) and len(key) > 10
     
     def is_local_model_configured(self) -> bool:
         """ローカルモデルが設定されているかを返す"""
         path = self._settings.local_model_path
-        return path and Path(path).exists()
+        return bool(path) and Path(path).exists()
+
+
+def get_groq_api_key() -> str:
+    """
+    Groq APIキーを取得する
+    
+    セキュリティ上、APIキーはconfig.jsonに保存しない。
+    以下の優先順位で取得する：
+    1. 環境変数 GROQ_API_KEY
+    2. settings.py（local_settings.py からの上書きを含む）
+    
+    Returns:
+        APIキー文字列。未設定の場合は空文字列
+    """
+    # 1. 環境変数を最優先
+    env_key = os.environ.get("GROQ_API_KEY", "")
+    if env_key and len(env_key) > 10:
+        return env_key
+    
+    # 2. settings.py（local_settings.py で上書きされているはず）
+    try:
+        import settings
+        key = getattr(settings, "GROQ_API_KEY", "")
+        # ダミー値でなければ使用する
+        if key and key != "API_KEY_IS_IN_LOCAL_SETTINGS" and len(key) > 10:
+            return key
+    except ImportError:
+        pass
+    
+    return ""
 
 
 # モジュールを直接実行した場合のテスト用

@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from typing import Callable, Optional
 
-from src.utils.config_manager import ConfigManager
+from src.utils.config_manager import ConfigManager, get_groq_api_key
 
 
 class SettingsDialog:
@@ -119,24 +119,29 @@ class SettingsDialog:
         api_key_label = ttk.Label(self._cloud_frame, text="Groq API Key:")
         api_key_label.pack(anchor=tk.W)
         
-        self._api_key_var = tk.StringVar()
-        self._api_key_entry = ttk.Entry(
-            self._cloud_frame,
-            textvariable=self._api_key_var,
-            show="*",  # パスワード形式
-            width=50
-        )
-        self._api_key_entry.pack(fill=tk.X, pady=(2, 5))
+        # APIキーの表示（読み取り専用）
+        current_key = get_groq_api_key()
+        if current_key:
+            masked_key = current_key[:4] + "*" * (len(current_key) - 4)
+        else:
+            masked_key = "（未設定）"
         
-        # 表示/非表示トグル
-        self._show_key_var = tk.BooleanVar(value=False)
-        show_key_check = ttk.Checkbutton(
+        self._api_key_display = ttk.Label(
             self._cloud_frame,
-            text="APIキーを表示",
-            variable=self._show_key_var,
-            command=self._toggle_key_visibility
+            text=masked_key,
+            font=("Yu Gothic UI", 9),
+            foreground="gray"
         )
-        show_key_check.pack(anchor=tk.W)
+        self._api_key_display.pack(fill=tk.X, pady=(2, 5))
+        
+        # 設定方法のヒント
+        hint_label = ttk.Label(
+            self._cloud_frame,
+            text="※ 環境変数 または local_settings.py で設定してください",
+            font=("Yu Gothic UI", 8),
+            foreground="gray"
+        )
+        hint_label.pack(anchor=tk.W)
         
         # === Local設定 ===
         self._local_frame = ttk.LabelFrame(main_frame, text="Local設定 (LFM)", padding="10")
@@ -206,7 +211,6 @@ class SettingsDialog:
         settings = self._config.settings
         
         self._mode_var.set(settings.inference_mode)
-        self._api_key_var.set(settings.groq_api_key)
         self._model_path_var.set(settings.local_model_path)
         self._whisper_var.set(settings.whisper_model_size)
         
@@ -216,12 +220,6 @@ class SettingsDialog:
     def _on_mode_change(self) -> None:
         """推論モード変更時のUI更新"""
         mode = self._mode_var.get()
-        
-        # Cloud設定フレームの有効/無効
-        cloud_state = "normal" if mode == "cloud" else "disabled"
-        for child in self._cloud_frame.winfo_children():
-            if isinstance(child, (ttk.Entry, ttk.Checkbutton)):
-                child.configure(state=cloud_state)
                 
         # Local設定フレームの有効/無効
         local_state = "normal" if mode == "local" else "disabled"
@@ -236,15 +234,8 @@ class SettingsDialog:
                 for grandchild in child.winfo_children():
                     try:
                         grandchild.configure(state=local_state)
-                    except:
+                    except Exception:
                         pass
-    
-    def _toggle_key_visibility(self) -> None:
-        """APIキーの表示/非表示を切り替える"""
-        if self._show_key_var.get():
-            self._api_key_entry.configure(show="")
-        else:
-            self._api_key_entry.configure(show="*")
             
     def _browse_model_file(self) -> None:
         """モデルファイル選択ダイアログを開く"""
@@ -264,7 +255,6 @@ class SettingsDialog:
         # 設定を更新
         settings = self._config.settings
         settings.inference_mode = self._mode_var.get()
-        settings.groq_api_key = self._api_key_var.get()
         settings.local_model_path = self._model_path_var.get()
         settings.whisper_model_size = self._whisper_var.get()
         

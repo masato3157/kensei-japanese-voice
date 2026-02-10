@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import time
 import sys
-# フォルダのパスを通すおまじない
-sys.path.append(".")
+from pathlib import Path
+# プロジェクトルートをパスに追加
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.audio.recorder import AudioRecorder
 from src.audio.transcriber import AudioTranscriber

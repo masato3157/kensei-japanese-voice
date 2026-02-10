@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-設定ローダー - 設定の読み込みとプロンプト生成
+設定ローダー - プロンプト生成と辞書読み込み
 
-このモジュールは、設定ファイル（settings.py）と辞書ファイル（dictionary.json）を
+このモジュールは、辞書ファイル（dictionary.json）を
 安全に読み込み、システムプロンプトを構築する機能を提供します。
 実行ディレクトリに依存せず、どこからでも正しく動作します。
 """
 
-import sys
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional
+
 
 # ============================================
 # パス解決
@@ -29,73 +29,14 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.parent.resolve()
 
 
-def get_settings_path() -> Path:
-    """settings.py のパスを取得する"""
-    return get_project_root() / "settings.py"
-
-
 def get_dictionary_path() -> Path:
     """dictionary.json のパスを取得する"""
     return get_project_root() / "src" / "data" / "dictionary.json"
 
 
 # ============================================
-# デフォルト値
+# 辞書読み込み
 # ============================================
-
-DEFAULT_SETTINGS = {
-    "GROQ_API_KEY": "YOUR_API_KEY_HERE",
-    "MODEL_NAME": "llama-3.3-70b-versatile",
-    "LLM_TEMPERATURE": 0.0,
-    "LLM_MAX_TOKENS": 1024,
-    "WHISPER_MODEL_SIZE": "base",
-    "WHISPER_DEVICE": "cpu",
-    "WHISPER_COMPUTE_TYPE": "int8",
-}
-
-DEFAULT_DICTIONARY: Dict[str, str] = {}
-
-
-# ============================================
-# 設定読み込み
-# ============================================
-
-def load_settings() -> Dict[str, Any]:
-    """
-    settings.py から設定を安全に読み込む
-    
-    ファイルが存在しない場合や読み込みエラー時はデフォルト値を返す。
-    
-    Returns:
-        設定値の辞書
-    """
-    settings = DEFAULT_SETTINGS.copy()
-    settings_path = get_settings_path()
-    
-    if not settings_path.exists():
-        print(f"[ConfigLoader] 警告: settings.py が見つかりません。デフォルト値を使用します。")
-        return settings
-    
-    try:
-        # settings.py を動的にインポート
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("settings", settings_path)
-        settings_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(settings_module)
-        
-        # 定義されている設定値を取得
-        for key in DEFAULT_SETTINGS.keys():
-            if hasattr(settings_module, key):
-                settings[key] = getattr(settings_module, key)
-                
-        print(f"[ConfigLoader] settings.py 読み込み完了")
-        return settings
-        
-    except Exception as e:
-        print(f"[ConfigLoader] エラー: settings.py の読み込みに失敗しました: {e}")
-        print(f"[ConfigLoader] デフォルト値を使用します。")
-        return settings
-
 
 def load_dictionary() -> Dict[str, str]:
     """
@@ -110,7 +51,7 @@ def load_dictionary() -> Dict[str, str]:
     
     if not dictionary_path.exists():
         print(f"[ConfigLoader] 警告: dictionary.json が見つかりません。辞書機能は無効です。")
-        return DEFAULT_DICTIONARY.copy()
+        return {}
     
     try:
         with open(dictionary_path, "r", encoding="utf-8") as f:
@@ -124,10 +65,10 @@ def load_dictionary() -> Dict[str, str]:
         
     except json.JSONDecodeError as e:
         print(f"[ConfigLoader] エラー: dictionary.json の解析に失敗しました: {e}")
-        return DEFAULT_DICTIONARY.copy()
+        return {}
     except Exception as e:
         print(f"[ConfigLoader] エラー: dictionary.json の読み込みに失敗しました: {e}")
-        return DEFAULT_DICTIONARY.copy()
+        return {}
 
 
 # ============================================
@@ -198,56 +139,10 @@ def build_system_prompt() -> str:
 
 
 # ============================================
-# ユーティリティ関数
+# キャッシュ付きアクセサ
 # ============================================
 
-def is_api_key_configured(settings: Optional[Dict[str, Any]] = None) -> bool:
-    """
-    APIキーが設定されているかチェックする
-    
-    Args:
-        settings: 設定辞書（省略時は自動読み込み）
-        
-    Returns:
-        設定されていればTrue
-    """
-    if settings is None:
-        settings = load_settings()
-        
-    api_key = settings.get("GROQ_API_KEY", "")
-    return api_key != "YOUR_API_KEY_HERE" and len(api_key) > 10
-
-
-def model_exists() -> bool:
-    """
-    互換性維持のためのダミー関数
-    Groq版ではモデルファイルは不要なので、常にTrueを返す
-    
-    Returns:
-        常にTrue
-    """
-    return True
-
-
-# ============================================
-# グローバル設定インスタンス（遅延初期化）
-# ============================================
-
-_cached_settings: Optional[Dict[str, Any]] = None
 _cached_prompt: Optional[str] = None
-
-
-def get_settings() -> Dict[str, Any]:
-    """
-    設定を取得する（キャッシュ付き）
-    
-    Returns:
-        設定値の辞書
-    """
-    global _cached_settings
-    if _cached_settings is None:
-        _cached_settings = load_settings()
-    return _cached_settings
 
 
 def get_system_prompt() -> str:
@@ -263,39 +158,12 @@ def get_system_prompt() -> str:
     return _cached_prompt
 
 
-# ============================================
-# 後方互換性のためのエイリアス
-# ============================================
-
-# 旧 config.py と同じインターフェースを提供
-def _get_setting(key: str, default: Any = None) -> Any:
-    """設定値を取得するヘルパー"""
-    return get_settings().get(key, default)
-
-
-# 注意: 設定値の取得には get_settings() 関数を使用してください
-# 例: api_key = get_settings().get("GROQ_API_KEY")
-
-
 # モジュールを直接実行した場合のテスト用
 if __name__ == "__main__":
     print("=== ConfigLoader テスト ===")
     print()
     print(f"プロジェクトルート: {get_project_root()}")
-    print(f"settings.py パス: {get_settings_path()}")
     print(f"dictionary.json パス: {get_dictionary_path()}")
-    print()
-    
-    print("=== 設定値 ===")
-    settings = get_settings()
-    for key, value in settings.items():
-        if "KEY" in key:
-            print(f"{key}: {'*' * 10}（非表示）")
-        else:
-            print(f"{key}: {value}")
-    print()
-    
-    print(f"APIキー設定済み: {is_api_key_configured(settings)}")
     print()
     
     print("=== システムプロンプト ===")

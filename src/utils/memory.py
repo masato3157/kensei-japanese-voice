@@ -175,9 +175,9 @@ class ContextManager:
         recent_history = self.history[-limit:]
         
         prompt = """
-[Previous Conversation Context]
-The following is the recent conversation history. Use this to understand the topic and context for correcting the new input.
-Consider the domain and subject matter when choosing between homophones (同音異義語).
+【直近の会話コンテキスト】
+以下は直近の会話履歴です。新しい入力を校正する際の文脈として参照してください。
+同音異義語の判定には、話題や分野を考慮してください。
 
 """
         for entry in recent_history:

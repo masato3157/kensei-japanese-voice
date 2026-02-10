@@ -29,10 +29,8 @@ def main():
     # メインウィンドウを作成
     window = create_main_window()
     
-    # 起動メッセージを表示
+    # 起動メッセージを表示（ヒントはウィンドウ側で表示するため省略）
     window.add_log("[システム] 賢声を起動しました")
-    window.add_log("[ヒント] 左Ctrl: 押している間録音（プッシュ・トゥ・トーク）")
-    window.add_log("[ヒント] 右Ctrl: 録音開始/停止（トグルモード）")
     
     # メインループを開始
     window.run()

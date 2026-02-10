@@ -206,7 +206,8 @@ class MainWindow:
     def _start_recording_session(self) -> None:
         """録音セッションを開始する（共通処理）"""
         self._recorder.start()
-        self._current_text_buffer = [] # バッファリセット
+        self._buffer_lock = threading.Lock()  # バッファ操作のスレッド安全性を保証
+        self._current_text_buffer = []  # バッファリセット
         self._is_streaming = True
         
         self.root.after(0, lambda: self.set_status("● 録音中...", "red"))
@@ -242,11 +243,13 @@ class MainWindow:
                 partial_text = self._transcriber.transcribe(chunk_data)
                 
                 if partial_text and partial_text.strip():
-                    # バッファに追加
-                    self._current_text_buffer.append(partial_text.strip())
+                    # バッファに追加（スレッド安全）
+                    with self._buffer_lock:
+                        self._current_text_buffer.append(partial_text.strip())
                     
                     # 現在の全テキストを結合（日本語なのでスペースなしで結合）
-                    current_full_text = "".join(self._current_text_buffer)
+                    with self._buffer_lock:
+                        current_full_text = "".join(self._current_text_buffer)
                     
                     # 文末記号で分割 (。, ？, ！)
                     # 肯定先読み (?<=...) を使って区切り文字を含めて分割する手もあるが、
@@ -273,8 +276,9 @@ class MainWindow:
                         remaining_text = last_part
                         confirmed_text = "".join(confirmed_parts)
                         
-                        # バッファをリセットし、未確定部分のみ再セット
-                        self._current_text_buffer = [remaining_text] if remaining_text else []
+                        # バッファをリセットし、未確定部分のみ再セット（スレッド安全）
+                        with self._buffer_lock:
+                            self._current_text_buffer = [remaining_text] if remaining_text else []
                         
                         # === 確定文の即時処理 ===
                         if confirmed_text:
@@ -362,11 +366,13 @@ class MainWindow:
             if audio_data is not None and len(audio_data) > 0:
                 last_text = self._transcriber.transcribe(audio_data)
                 if last_text and last_text.strip():
-                    self._current_text_buffer.append(last_text.strip())
+                    with self._buffer_lock:
+                        self._current_text_buffer.append(last_text.strip())
                     self.root.after(0, lambda t=last_text: self.add_log(f"[認識(残)] {t}"))
 
-            # 未確定バッファに残っているテキストを処理
-            full_text = "".join(self._current_text_buffer).strip()
+            # 未確定バッファに残っているテキストを処理（スレッド安全）
+            with self._buffer_lock:
+                full_text = "".join(self._current_text_buffer).strip()
             
             if not full_text:
                 self.root.after(0, lambda: self.add_log("[認識] テキストなし"))
@@ -419,7 +425,7 @@ class MainWindow:
                     mode = config.settings.inference_mode.upper()
                     if hasattr(self, '_stats_label'):
                         self._stats_label.config(text=f"AI Mode: {mode}")
-                except:
+                except Exception:
                     pass
                 return
                 
@@ -550,8 +556,8 @@ class MainWindow:
         """ウィンドウを閉じる際の処理"""
         self.add_log("[システム] 終了処理中...")
         
-        # ホットキーを解除
-        keyboard.unhook_all_hotkeys()
+        # KeyboardHandler.stop() が自前のフックを解除するため、
+        # unhook_all_hotkeys() は不要（他アプリへの影響を避ける）
         
         self._keyboard_handler.stop()
         self._recorder.dispose()

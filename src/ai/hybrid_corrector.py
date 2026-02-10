@@ -11,7 +11,7 @@ from typing import Optional
 from pathlib import Path
 
 # ConfigManager
-from src.utils.config_manager import ConfigManager
+from src.utils.config_manager import ConfigManager, get_groq_api_key
 import src.utils.config_loader as config_loader
 
 # Cloud: Groq
@@ -83,7 +83,7 @@ class HybridCorrector:
             print("[HybridCorrector] エラー: groqライブラリがインストールされていません")
             return
             
-        api_key = self._config.settings.groq_api_key
+        api_key = get_groq_api_key()
         if not api_key or len(api_key) < 10:
             print("[HybridCorrector] 警告: Groq APIキーが設定されていません")
             return

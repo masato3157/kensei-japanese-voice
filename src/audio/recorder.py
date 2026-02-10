@@ -112,8 +112,10 @@ class AudioRecorder:
         Returns:
             (None, paContinue) で録音を継続
         """
+        # ロックでバッファ操作を保護（stop/get_audio_chunkとの競合を防止）
         if self._is_recording:
-            self._frames.append(in_data)
+            with self._lock:
+                self._frames.append(in_data)
         return (None, pyaudio.paContinue)
     
     def stop(self) -> Optional[np.ndarray]:
